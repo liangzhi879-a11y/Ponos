@@ -15,6 +15,8 @@ import { resolve, join } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 import { buildMemoryIndex, memoryRoot } from './memory.mjs'
+// S1+/O4：渠道五分与来源清单的**单一真源**在 inject-ledger.mjs（本文件只引用，不重抄）
+import { CHANNELS, BY_SOURCE, getAtlasStats } from './inject-ledger.mjs'
 
 /** 总预算默认值与 server 侧 experienceInjectMaxBytes 的默认一致（4096，见 spec §11.3 N6）。 */
 const DEFAULT_TOTAL_BUDGET = 4096
@@ -25,6 +27,15 @@ const RECALL_CANDIDATES = 8
 /** 同一文档最多贡献的块数（防单文档刷屏，spec §3.2）。 */
 const MAX_BLOCKS_PER_DOC = 2
 /**
+ * 同一**空间**最多贡献的块数（2026-09-15，P1「数据膨胀的应对措施」G3）。
+ *
+ * **why 是 4**：`RECALL_CANDIDATES=8` 只限了总量、`MAX_BLOCKS_PER_DOC=2` 只限了单文档，
+ * **分布**无约束——8 条候选全来自同一个巨型库时，抽调层退化为"某一个大库的摘要"，
+ * 其余已关联的库完全不可见（用户刚关联的第二个库"好像没生效"）。
+ * 4 = 总量的一半：保证至少两个库有机会出现，同时小库（命中 ≤4 条）行为逐字节不变。
+ */
+const MAX_RECALL_PER_SPACE = 4
+/**
  * 每条命中最多附几个锚点摘要（S5 Task 10 / spec §7.6）。
  *
  * **why 是 3**：与 `kernel/knowledge.mjs` 的 `SEARCH_RELATED_TOPN` 同值。注入语料是**每次请求
@@ -33,7 +44,9 @@ const MAX_BLOCKS_PER_DOC = 2
  * 这里**再截一次**而不是直接信 `it.related` 的长度：上游上限是工具侧的选择，注入侧不该
  * 被动跟着膨胀（两道闸门各守各的预算；将来放开工具侧上限也不会连带撑爆每次请求）。
  */
-const INJECT_RELATED_TOPN = 3
+// ★ 导出（S4.5④）：EL1 线索层渲染一跳锚点时必须用**同一个**上限——另造一个常量就是
+// "同一口径两处定义"，改一处漏一处（`anchorTextOf` 与本常量是统一的既有口径）
+export const INJECT_RELATED_TOPN = 3
 
 // ── 灰度开关解析（D1）───────────────────────────────────────────────────────
 // 优先级：env > settings > 缺省。**缺省必须是 legacy**——老用户升级后行为不得突变
@@ -51,19 +64,85 @@ export function resolveInjectBudget({ settings = null, env = process.env } = {})
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_TOTAL_BUDGET
 }
 
+// ── T1.3（2026-10-20）：legacy 抽调层的**预算内**上限 ─────────────────────────
+//
+// 问题（问0）：legacy 模式下 `graph.search` 用默认 `maxChars`（2,048 **字符**，中文 ≈6 KB），
+//   而索引层已按 `totalBudget` 切分 ⇒ 抽调层**整个在预算之外**，实际注入量随图谱内容抖动且无上限
+//   （"索引层省下的 4 KB"会被这 6 KB 悄悄吃掉，`PONOS_KNOWLEDGE_INJECT_MAX_BYTES` 形同虚设）。
+//
+// 改法：把**剩余预算**折算成字符给它（剩余 = 总预算 - 抽调层已用 - 索引层已用）。
+//   三条口径：
+//    ① 按**字节**算剩余、按**字符**给上限：中文 1 字 ≈ 3 字节，故 `/3`（保守：宁可少给，
+//      不可让"预算"变成一句空话）；
+//    ② 剩余 ≤ 0 ⇒ 返回 **0**，调用方据此**跳过**抽调（不硬塞）：预算已经用完了就不该再加；
+//    ③ 返回 0 时必须由调用方跳过 —— 因为 `memory-rank#resolveBudget` 把 0 当"未设置"回落到
+//      默认 2048（`Number(null)===0` 的既有陷阱）⇒ 直接传 0 会变成"给得更多"，与意图相反。
+//
+// 纯函数（无 IO）：便于单测直接钉住三条口径，不必起会话或造图谱。
+/**
+ * @param {{totalBytes?: number, usedBytes?: number}} [p] `usedBytes` = 抽调层与索引层**已用**的字节
+ * @returns {number} 可给抽调层的字符上限；`0` = 不要再抽调（调用方必须跳过）
+ */
+export function resolveRecallChars({ totalBytes = 0, usedBytes = 0 } = {}) {
+  const total = Number(totalBytes)
+  const used = Number(usedBytes)
+  if (!Number.isFinite(total) || total <= 0) return 0
+  const remain = total - (Number.isFinite(used) ? used : 0)
+  if (remain <= 0) return 0
+  return Math.floor(remain / 3)   // 中文 1 字 ≈3 字节（保守折算）
+}
+
 // ── 统计累加器（S3 观测，spec §6）────────────────────────────────────────────
 // 进程内累加，**不落盘**：跨进程无意义（CLI 每次 `--knowledge stats` 都是新进程，读到的
 // 只会是初值）。真实消费者是长驻会话的日志/调试与 server 进程内的 `GET /knowledge/stats`。
 let acc = freshStats()
 function freshStats() {
-  return { calls: 0, strategy: 'legacy', indexLines: 0, recallBlocks: 0, elapsedMs: 0, indexAgeMs: null, degraded: null, queries: 0, hitQueries: 0 }
+  const zeroChannels = () => Object.fromEntries(CHANNELS.map((c) => [c, { calls: 0, hits: 0, injectedBytes: 0 }]))
+  const zeroBySource = () => Object.fromEntries(BY_SOURCE.map((s) => [s, 0]))
+  return {
+    calls: 0, strategy: 'legacy', indexLines: 0, recallBlocks: 0, elapsedMs: 0, indexAgeMs: null, degraded: null, queries: 0, hitQueries: 0,
+    // S1+/O4 新增（**只增不删**）：渠道五分 + 来源归因。
+    // 为什么是这五个渠道而不是 legacy/unified：后者是**检索策略**维度，回答不了
+    // "这些字节从哪个渠道进来"，达不到 A13「可归因到 5% 以内」。
+    channels: zeroChannels(),
+    bySource: zeroBySource(),
+    // 会话知识范围观测（2026-09-15，P1「数据膨胀的应对措施」）：scope = 本次注入实际使用的
+    // 白名单（null = 不限/未参与），spacesDropped = 因超关联上限被忽略的库，
+    // spacesCapped = 因单库配额（MAX_RECALL_PER_SPACE）被压制的库。
+    scope: null, spacesDropped: [], spacesCapped: [] }
 }
 
 export function getInjectStats() {
-  return { ...acc, hitRate: acc.queries ? Number((acc.hitQueries / acc.queries).toFixed(3)) : 0 }
+  return {
+    ...acc,
+    hitRate: acc.queries ? Number((acc.hitQueries / acc.queries).toFixed(3)) : 0,
+    // P1.1：Project Atlas 的构建/查询/注入观测（只增字段，旧字段口径不变）。
+    atlas: getAtlasStats(),
+  }
 }
 
 export function resetInjectStats() { acc = freshStats() }
+
+/**
+ * S1+/O4：外部注入点登记渠道活动（**只增不删**既有统计）。
+ * patch 只接受 calls/hits/injectedBytes 三个计数（缺省按 0）—— 不接受任意字段，
+ * 防止别的语义被塞进渠道账（要加维度就改 inject-ledger 的 CHANNELS）。
+ */
+export function recordChannel(name, patch = {}) {
+  if (!CHANNELS.includes(name)) throw new Error(`未知注入渠道: ${name}`)
+  const cur = acc.channels[name]
+  const n0 = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+  cur.calls += n0(patch.calls)
+  cur.hits += n0(patch.hits)
+  cur.injectedBytes += n0(patch.injectedBytes)
+}
+
+/** S1+/O4：外部注入点登记来源字节（如 systemPrompt 段的实测长度）。 */
+export function recordSource(name, bytes = 0) {
+  if (!BY_SOURCE.includes(name)) throw new Error(`未知注入来源: ${name}`)
+  const n0 = Number(bytes)
+  acc.bySource[name] += Number.isFinite(n0) && n0 > 0 ? Math.floor(n0) : 0
+}
 
 /**
  * 指标落盘（S3 §6）：`--knowledge stats` 每次都是新进程，进程内累加器恒为初值 —— 不落盘
@@ -91,10 +170,22 @@ const countLines = (s) => String(s || '').split('\n').filter((l) => l.startsWith
  *   本模块不 import graph——那样会让"注入策略"与"图谱实现"耦死，也让 legacy 回退不再等价于改动前。
  */
 export function buildKnowledgeInjection({
-  configDir = '', memoryRootDir = null, query = '', keywords = [], spaces = null,
+  configDir = '', memoryRootDir = null, query = '', keywords = [], spaces = null, spacesDropped = [],
   totalBudget = DEFAULT_TOTAL_BUDGET, mode = 'legacy', recall = true, knowledgeIndex = null,
 } = {}) {
   const t0 = Date.now()
+  // 会话知识范围（2026-09-15，P1）：`spaces` = 本会话的白名单。
+  // **三态语义，必须区分"不限"与"空白名单"**（漏掉后者就是 fail-open，见下）：
+  //   · null/非数组 = 不限（嵌入/测试/旧调用方：维持改动前行为）
+  //   · 非空数组  = 白名单（只在范围内打分）
+  //   · 空数组    = **本会话没有任何可检索的知识库** → 完全不抽调知识库内容
+  // 空数组这条是评审抓出的缺口：早先写成 `spaces.length ? ... : null`，于是"内置经验库都不存在"
+  // （memory/personal 被删、或首启未经 ensurePersonalDir）时白名单退化成"不限"，注入层与工具层
+  // **同时**把用户储备库重新放进来——范围边界在最该收紧的一个场景里静默失效。范围该 fail-closed。
+  const scopeArr = Array.isArray(spaces) ? spaces.map(String) : null
+  const scopeEmpty = !!scopeArr && scopeArr.length === 0
+  // legacy 模式**不消费**它（那条路注入的是个人经验目录行），故 legacy 的 stats.scope 恒为 null ——
+  // 如实上报"本次注入没有使用范围"，而不是把调用方传进来的白名单照抄一份，让人误以为 legacy 也收敛了。
   const total = Number(totalBudget) > 0 ? Math.floor(Number(totalBudget)) : DEFAULT_TOTAL_BUDGET
   const strategy = mode === 'unified' ? 'unified' : 'legacy'
   // memoryRootDir 缺省时按 <configDir>/memory/personal 推导（与 kernel/cli.mjs 同一函数，
@@ -108,8 +199,9 @@ export function buildKnowledgeInjection({
     const stats = {
       strategy, indexLines: countLines(indexSection), recallBlocks: 0,
       spaces: [], elapsedMs: Date.now() - t0, indexAgeMs: null, degraded: null,
+      scope: null, spacesDropped: [], spacesCapped: [],
     }
-    record(stats, { queried: false })
+    record(stats, { queried: false, indexBytes: byteLen(indexSection) })
     persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats }
   }
@@ -121,12 +213,16 @@ export function buildKnowledgeInjection({
 
   let recallSection = ''
   let storeRef = null   // 供指标 sidecar 读检索耗时（legacy 路径为 null）
-  let stat = { strategy, indexLines: countLines(indexSection), recallBlocks: 0, spaces: [], elapsedMs: 0, indexAgeMs: null, degraded: null }
+  let stat = { strategy, indexLines: countLines(indexSection), recallBlocks: 0, spaces: [], elapsedMs: 0, indexAgeMs: null, degraded: null,
+    // scope 如实上报**调用方给的白名单**：空数组就报 []（= 本会话无可检索库），不得写成 null
+    // （null 的语义是"不限"——把"空"报成"不限"会让事后排查得到相反结论）。
+    scope: scopeArr ? [...scopeArr] : null, spacesDropped: Array.isArray(spacesDropped) ? [...spacesDropped] : [], spacesCapped: [] }
   // recall=false：`PONOS_MEMORY_INJECT=index-only` 逃生阀（只要索引指针）。unified 下若不短路，
   // 该开关会静默失效——用户设了"仅索引"却仍在抽调，是比"少个功能"更坏的故障模式。
-  if (!recall) {
+  // scopeEmpty：空白名单 = 本会话无可检索知识库 → 同样不抽调（见上方三态说明）。
+  if (!recall || scopeEmpty) {
     stat.elapsedMs = Date.now() - t0
-    record(stat, { queried: false })
+    record(stat, { queried: false, indexBytes: byteLen(indexSection) })
     persistMetrics({ configDir, inject: getInjectStats(), search: null })
     return { indexSection, recallSection: '', stats: stat }
   }
@@ -140,17 +236,40 @@ export function buildKnowledgeInjection({
     storeRef = store
     store.load({})
     const recallCap = Math.max(0, total - idxBytes)
+    /**
+     * 候选池大小（2026-09-15，P1 膨胀护栏 G3 的**前半段**，实测缺口）。
+     *
+     * 原实现只取 `RECALL_CANDIDATES=8` 条候选、再在渲染时按空间配额裁剪。单测（本任务
+     * knowledge-recall-quota.test.mjs）当场抓到缺口：一个 8 篇的大库能把 8 条候选**全部占满**，
+     * 于是"关联的小库"连候选都不是——配额根本轮不到它，`关联了第二个库却没出现`依旧发生。
+     * 配额只有在候选池**足够宽**时才是有效护栏：两个护栏必须配对，缺一即失效。
+     *
+     * 取 `MAX_RECALL_PER_SPACE × 范围空间数`：这保证"每个已关联的库只要真有命中，就至少占得到
+     * 自己的那 4 个候选位"，而不是被先到的大库挤掉。上限 64 兜底（范围上限是 8 个空间 ⇒
+     * 实际上限 32，64 只是防上游传超长数组时白扫一遍大索引）。
+     * `spaces` 非数组（嵌入/测试/不限）时**保持 8 且不套配额**：那是既有行为的零回归锁
+     * ——配额是为"多库并存防一库刷屏"设计的，单库/不限场景没有可防的对象。
+     */
+    const scopeCount = scopeArr ? new Set(scopeArr).size : 0
+    const candidatePool = scopeCount
+      ? Math.min(64, Math.max(RECALL_CANDIDATES, MAX_RECALL_PER_SPACE * scopeCount))
+      : RECALL_CANDIDATES
     const r = store.search({
-      query, keywords, spaces, topK: RECALL_CANDIDATES, maxBytes: recallCap || 1,
+      // 传 scopeArr（归一后的数组或 null）：调用方若给了非数组的脏值，语义与"不限"一致，
+      // 但不该把脏值原样丢进检索层（store 侧对非数组走"不过滤"，行为相同但意图更清晰）。
+      query, keywords, spaces: scopeArr, topK: candidatePool, maxBytes: recallCap || 1,
       // keywords 一律传数组（**不传 null**）：shared/knowledge-core.mjs 的 keywordScore 对
       // null 走防御分支返回 0（S1 裁定保留），传 null 会静默丢掉关键词路得分（S2 §11.4 同款教训）。
       mode: 'snippet',
     })
     stat.indexAgeMs = r.indexAge ?? null
-    const built = renderRecall(r.items, { store, cap: recallCap })
+    const built = renderRecall(r.items, { store, cap: recallCap, perSpaceCap: scopeCount ? MAX_RECALL_PER_SPACE : Infinity })
     recallSection = built.section
     stat.recallBlocks = built.count
     stat.spaces = [...new Set(r.items.map((i) => i.spaceId))]
+    // 单库配额压制留痕（G3）：命中被 4 条上限吃掉的库要记下来——否则"关联了第二个库却没出现"
+    // 无法与"那个库本来就没命中"区分（这正是膨胀问题最难排查的那类现象）。
+    stat.spacesCapped = Array.isArray(built.cappedSpaces) ? [...built.cappedSpaces] : []
     // 让渡的另一半：抽调层没命中时，索引层可以吃满总预算（spec §3.3"任一层未用满可让渡"）。
     // 只在"索引层确实被 cap 截短"时才重算，避免每次白扫一遍目录。
     if (!built.count && total > indexCap && countLines(indexSection) > 0) {
@@ -177,7 +296,7 @@ export function buildKnowledgeInjection({
     recallSection = ''
     stat.recallBlocks = 0
   }
-  record(stat, { queried: true })
+  record(stat, { queried: true, indexBytes: byteLen(indexSection), recallBytes: byteLen(recallSection) })
   persistMetrics({
     configDir,
     inject: getInjectStats(),
@@ -190,12 +309,12 @@ export function buildKnowledgeInjection({
  * 渲染抽调层：块级行 + **粒度自适应**（D3）。
  * 顺序即 store.search 的分数降序——升级只改渲染文本、**不重新检索**，避免"两套排序"漂移。
  */
-function renderRecall(items, { store, cap }) {
+function renderRecall(items, { store, cap, perSpaceCap = Infinity }) {
   const head = '\n\n【相关知识抽调】根据当前任务上下文，以下知识块与任务直接相关，可直接引用（格式：-[空间|标题] 摘要 -- 文件 › 小节 · 第 N 行 (块id)）：\n'
   // 锚点说明只在**确有锚点**时才追加（见下方 rows.some）：off 模式与无关联的库因此与 S4
   // 逐字节一致——"新能力可回滚"这句话必须体现在输出上，而不只是体现在代码分支上。
   const anchorHint = '（行尾 ` ↵关联：文件#块号「标题」[理由]` 是这条还能往哪读的一跳锚点，只给位置与理由；需正文用 Read 打开该文件）\n'
-  if (!Array.isArray(items) || !items.length || cap <= byteLen(head)) return { section: '', count: 0 }
+  if (!Array.isArray(items) || !items.length || cap <= byteLen(head)) return { section: '', count: 0, cappedSpaces: [] }
 
   // 复选框行（`- [ ] Step N`）是无标签的 entry 块：它们是任务清单而非沉淀知识。
   // S1 裁定"经验条目 = 有 tag 的 entry 块"，S2 据此定渲染规则，注入层沿用同一判定
@@ -211,17 +330,30 @@ function renderRecall(items, { store, cap }) {
     return b ? { tag: b.tag, full: b.full || b.text } : { tag: null, full: null }
   }
 
+  /** 候选行（`useAnchors`/`summaryLine`/`upgraded` 为两遍装入的记账字段，可选）：
+   * @type {Array<{ it: any, text: any, full: any, anchorText: any, useAnchors?: boolean, summaryLine?: any, upgraded?: boolean }>} */
   const rows = []
   const seen = new Set()
   const perDoc = new Map()
+  // 每空间配额（G3）：命中按分数降序进来，故"先到先得"天然等价于"该库最高分的 4 条"。
+  // `perSpaceCap` 由调用方按"本会话是否真的指定了范围"决定（见下方 renderRecall 入参）：
+  // 未指定范围的路径（嵌入/测试/不限）保持改动前的行为逐字节不变，配额只在受范围约束的
+  // 会话里生效——它是为"多库并存时防一库刷屏"设计的，单库场景没有可防的对象。
+  const perSpace = new Map()
+  const cappedSpaces = new Set()
   for (const it of items) {
     if (seen.has(it.blockId)) continue                 // blockId 去重（同一块不得出现两次）
     const n = perDoc.get(it.docId) || 0
     if (n >= MAX_BLOCKS_PER_DOC) continue              // 同文档 ≤ 2 块
     const meta = tagOf(it)
     if (it.kind === 'entry' && !meta.tag) continue     // 无标签 entry = 清单行，不是知识
+    // 配额判定放在**两道过滤之后**：先过滤掉的块本来就不会渲染，把它们的空间记成"被压制"
+    // 是假账（用户会去找一个并不存在的配额问题）。只有"本该渲染、却因配额被砍"才算数。
+    const sn = perSpace.get(it.spaceId) || 0
+    if (sn >= perSpaceCap) { cappedSpaces.add(it.spaceId); continue }
     seen.add(it.blockId)
     perDoc.set(it.docId, n + 1)
+    perSpace.set(it.spaceId, sn + 1)
     rows.push({ it, text: it.snippet, full: meta.full, anchorText: anchorTextOf(it) })
   }
 
@@ -258,8 +390,8 @@ function renderRecall(items, { store, cap }) {
     if (cost <= leftover) { row.upgraded = true; leftover -= cost }
   }
 
-  if (!included.length) return { section: '', count: 0 }
-  return { section: header + included.map((r) => renderLine(r, true, r.useAnchors)).join('\n') + '\n', count: included.length }
+  if (!included.length) return { section: '', count: 0, cappedSpaces: [...cappedSpaces] }
+  return { section: header + included.map((r) => renderLine(r, true, r.useAnchors)).join('\n') + '\n', count: included.length, cappedSpaces: [...cappedSpaces] }
 }
 
 /**
@@ -302,7 +434,29 @@ function renderLine(row, withMarker, useAnchors = false) {
   return `- [${it.spaceId}|${it.title}] ${text} -- ${where}${marker}${rel}`
 }
 
-function record(stat, { queried }) {
+function record(stat, { queried, indexBytes = 0, recallBytes = 0 }) {
+  // S1+/O4：derived 渠道（统一注入的派生内容）+ 经验/知识来源的**实测字节**归因。
+  // ★ 只累加真实测到的长度，不估算、不按行数折算（不造数）。
+  //
+  // ★ 2026-09-26（Task 2 收尾轮）：修字节口径 bug —— 入参**已经是字节数**（三处调用点都传
+  //   `byteLen(indexSection)` 这类**已算好的数字**），此前在这里又套了一层 `byteLen()`，
+  //   于是 `Buffer.byteLength(String(157))` = **3**（在量"数字字符串的长度"，而不是 157 字节）；
+  //   实测 530 B 的注入被记成 6 B，`channels.derived.injectedBytes` 进 inject_snapshot 的
+  //   `injected` 段 ⇒ 每轮注入账少记 500+ 字节（假数据，比缺数据更坏：它看起来是正常数值）。
+  //   口径改为与本文件 recordChannel/recordSource 内部**完全一致**的"非负整数归零"：
+  //   有限正数取整、其余（负/NaN/Infinity/非数字）一律 0 —— 三个数出自同一套归一化，
+  //   来源两项之和恒等于渠道字节这条不变式才有意义。
+  const n0 = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0 }
+  const __injected = n0(indexBytes) + n0(recallBytes)
+  // ★ 2026-09-26（S1.3 Task 2）：不再直接改 acc —— 走公开仪表。
+  //   why：同一件事两处实现必然漂移。此前这里直写 acc，与 recordChannel/recordSource
+  //   是**两套口径**（负值/非数字的归一化一旦只改一处就不一致），且掩盖了"仪表零调用"
+  //   这个事实（channels.derived 与 bySource.experience|knowledge 有值，其余渠道恒 0，
+  //   看起来"仪表在工作"，其实根本没有埋点）。数值语义与直写版**逐项等价**：
+  //   calls +1 / injectedBytes += 实测和 / __injected > 0 才 hits +1。
+  recordChannel('derived', { calls: 1, hits: __injected > 0 ? 1 : 0, injectedBytes: __injected })
+  recordSource('experience', n0(indexBytes))
+  recordSource('knowledge', n0(recallBytes))
   acc.calls += 1
   acc.strategy = stat.strategy
   acc.indexLines = stat.indexLines
@@ -310,6 +464,10 @@ function record(stat, { queried }) {
   acc.elapsedMs = stat.elapsedMs
   acc.indexAgeMs = stat.indexAgeMs
   acc.degraded = stat.degraded
+  // 范围观测（2026-09-15，P1）：随每次注入刷新为"最近一次"的值，与上面各项同口径。
+  acc.scope = stat.scope ?? null
+  acc.spacesDropped = Array.isArray(stat.spacesDropped) ? [...stat.spacesDropped] : []
+  acc.spacesCapped = Array.isArray(stat.spacesCapped) ? [...stat.spacesCapped] : []
   if (queried) {
     acc.queries += 1
     if (stat.recallBlocks > 0) acc.hitQueries += 1

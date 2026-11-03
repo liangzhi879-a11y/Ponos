@@ -1,7 +1,7 @@
 // Ponos-turbo LLM API 客户端（docs/bridge-contract.md §2 buildChildEnv 注入的 provider env）
 // ---------------------------------------------------------------------------
-// 以 Anthropic Messages API 兼容协议调上游（ANTHROPIC_BASE_URL +
-// ANTHROPIC_AUTH_TOKEN + ANTHROPIC_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
+// 以 Anthropic Messages API 兼容协议调上游（PONOS_BASE_URL +
+// PONOS_AUTH_TOKEN + PONOS_MODEL）。OpenAI 兼容端点已删除（2026-08-20 实测
 // deepseek OpenAI 端点带 tools 时高概率 thinking-only 空回复，见 zz-smoke 冒烟记录），
 // SSE 流式解析后产出结构化 chunk：
 //   { type: 'text',     text }      已累积的文本段（按段落/阈值切分）
@@ -11,6 +11,32 @@
 // PONOS_MOCK_API=1：内置幂等 mock 流（引擎测试用，无网络）。
 import { abortError } from './protocol.mjs'
 import { getProvider, authHeaders } from './provider.mjs'
+// 协议层（2026-09-23 OpenAI 协议兼容）：协议差异收敛在 kernel/wire/，本模块只做分派。
+// 切帧与 usage 归一必须与 OpenAI 侧**共用同一份**（两条逻辑都是用真实事故换来的），
+// 故从 wire/ 导入而非各写一份；wire/ 不反向 import 本模块（防循环依赖）。
+import { segmentText } from './wire/segment.mjs'
+import { normalizeUsage } from './wire/usage.mjs'
+import { createOpenAIParser, encodeOpenAIRequest, openaiHeaders } from './wire/openai.mjs'
+import { normalizeApiFormat, resolveApiFormat, isProtocolRejection, anthropicStreamUrl, openaiStreamUrl } from './wire/url.mjs'
+
+/**
+ * 内核 API 错误的**扩展字段**（S2.1 登记，全部键可选）：本模块大量构造 `new Error(...)`
+ * 后补写这些字段，`classifyApiError` 也据此分流（`status` 判 5xx/429/4xx，
+ * `kind`/`hint` 透传空产出诊断，`providerType` 记流内 SSE 错误类型）。
+ * 它们都是"挂在标准 Error 上的附加信息"，故登记为交叉形状——只补类型面，
+ * 运行期仍是同一个 Error 实例、同一份赋值（F2 修法 R3「Node 错误扩展」）。
+ * @typedef {Error & {
+ *   status?: number, kind?: string, hint?: string, providerType?: string,
+ *   fallbackProviderId?: string|null,
+ * }} ApiError
+ */
+// 协议相关模型名（2026-09-23 Task 1）：同一 provider 的模型名可能跨协议不同
+// （MiniMax：Anthropic 侧 `MiniMax-M3[1m]`，OpenAI 侧必须 `MiniMax-M3`）。
+import { pickModelName } from './wire/model.mjs'
+// 仅 PONOS_MOCK_CACHE_SEQ 的 `big:` 键使用（见 mockStream 内注释）：把大体积夹具落成
+// 真实文件，供 Read 产出**可老化**的大工具结果。其余 mock 分支不碰文件系统。
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const MOCK_SLEEP_MS = 30
 
@@ -37,103 +63,77 @@ function sleepAbortable(ms, signal) {
   })
 }
 
-// 将 SSE 文本增量累积并按段落边界切分：产出 1..n 个 {type:'text'} chunk。
-// 【2026-09-12 流式观感与丢字修复】两处缺陷（均已用探针实证）：
-//   ① 只在 "\n\n" 处产出 ⇒ 模型写整段无空行时，该段被扣到步末 finish() 才一次性
-//      吐出，观感是"卡住几个字、不是流式输出"（用户实测语），而本会话每步可见文本
-//      中位数仅 51B ⇒ 每步只蹦几个字再冻结数秒。超阈值即先吐，段落边界仍优先。
-//   ② `return rest` 的尾巴不进 for...of（生成器返回值不参与迭代），而调用方又在
-//      首轮就 textBuf='' ⇒ 同一 delta 内 "\n\n" 之后的文字**永久丢失**（实证：喂
-//      '第一段\n\n第二段开始' 只吐 '第一段\n\n'；喂整块 '## 标题\n\n正文一。\n\n
-//      正文二。' 只活下第一段）。丢失不止是显示：引擎自己的 textBuf 同源累积
-//      （engine.mjs 用它落盘 assistant 消息并作下一轮上下文），故模型会"忘掉"自己
-//      刚说过的话。⇒ 改为"产出段 + 返回尾巴"，尾巴由调用方留在缓冲里。
-// 默认 16 字：本仓实测慢模型（qwen/vLLM 约 15 B/s）下 ≈1s 一跳，观感接近连续；
-// 调到 1 即"每 delta 一帧"（最大流式粒度，帧数最多）。设 0/非法值回落默认。
-const TEXT_FLUSH_CHARS = () => Math.max(1, Number(process.env.PONOS_TEXT_FLUSH_CHARS) || 16)
-
-// 【2026-09-12 标记完整性】未闭合的 HTML 注释（`<!--` 尚无配对 `-->`）不得在中间切帧。
-// 依据：ASK_USER 提问卡与 MILESTONE 进度标记**都是 HTML 注释**，而桥侧是**逐帧**正则
-// 提取、要求同一帧内闭合（bridge.mjs 的 extractAskUserBlocks / extractMilestoneMarks
-// 都用 `[\s\S]*?-->`）。按字符数切帧会把 93 字的 ASK_USER 标记切成 7 帧 ⇒ 卡片 0 命中、
-// 且原始 `<!--ASK_USER {...` 原样漏进气泡（探针实证：切帧数 7、命中 0、7 帧全原样转发）。
-// 此处只做纯语法判定、不认知任何具体标记名（渲染层 markdown 同样不再见到半截注释）。
-// 上限兜底：模型写出永不闭合的 `<!--` 时不得把整段扣住（那恰是"卡住几个字"的病根），
-// 超过上限即放弃押后、照常吐帧。0 = 关闭押后（退回纯长度切分）。
-const MARKER_HOLD_MAX = () => {
-  const raw = process.env.PONOS_TEXT_MARKER_HOLD_MAX
-  if (raw === undefined || raw === '') return 2048
-  const n = Number(raw)
-  return Number.isFinite(n) && n >= 0 ? n : 2048
-}
-
-// 返回"必须押后的起点"：无未闭合注释时 = buf.length（可自由切分）
-function holdStart(buf) {
-  const max = MARKER_HOLD_MAX()
-  if (!max) return buf.length
-  const i = buf.lastIndexOf('<!--')
-  if (i < 0 || buf.indexOf('-->', i + 4) !== -1) return buf.length
-  return buf.length - i > max ? buf.length : i // 超上限 = 放弃押后（防坏标记扣住整段）
-}
-
-// 切点 pos 是否落在某个 HTML 注释**内部**。判据必须是"注释内部"而非"当前押后区内"：
-// 注释一旦闭合押后就释放了，若只看押后区，载荷内的 `\n\n` 会在闭合的瞬间变回合法
-// 切点、把已完整的标记重新切成两帧（夹具实证：`<!--MILESTONE-OK 1/3 读代码\n\n继续跑-->`
-// 在 `-->` 到达后被从 `\n\n` 处切开）。取"最后一个 `<!--` 是否晚于最后一个 `-->`"。
-function insideComment(s, pos) {
-  const head = s.slice(0, pos)
-  return head.lastIndexOf('<!--') > head.lastIndexOf('-->')
-}
-
-function* segmentText(buffer, kind = 'text') {
-  let rest = buffer
-  while (rest) {
-    const holdAt = holdStart(rest)
-    const idx = rest.indexOf('\n\n')
-    if (idx >= 0 && !insideComment(rest, idx + 2)) {
-      const seg = rest.slice(0, idx + 2)
-      rest = rest.slice(idx + 2)
-      if (seg.trim()) yield { type: kind, text: seg }
-      continue
-    }
-    // 无段界但已够长：先吐，避免整段被扣到流末（帧数仍远少于逐 delta 直发）
-    if (rest.length >= TEXT_FLUSH_CHARS() && holdAt === rest.length) {
-      yield { type: kind, text: rest }
-      rest = ''
-    }
-    break
-  }
-  return rest
-}
+// 文本切帧（segmentText）与 usage 归一（normalizeUsage）已搬至 kernel/wire/
+// （2026-09-23，OpenAI 协议兼容）：Anthropic 与 OpenAI 两个解析器必须共用同一份实现，
+// 而 wire/ 不能反向 import 本模块（循环依赖）。
+//   · 切帧：段落切分 + 超阈值先吐 + `<!--` 未闭合押后 + "返回尾巴不丢字" → wire/segment.mjs
+//   · usage：三形态别名（Anthropic/DeepSeek 原生/OpenAI）+ 命中口径归一 → wire/usage.mjs
+// 两处的原始事故记录随之保留在那两个文件内，勿在本文件重复维护。
 
 // 协议检测：仅 Anthropic 兼容协议（deepseek 等 provider 的 /anthropic 端点）。
 // 纯 env 契约（api-protocol.test.mjs 以自定义 env 对象调用，不得读 registry/process）。
 // P4-5 registry 生效点只在 anthropicStream 内部（getProvider 未激活时现读 env，等效）。
 export function detectProtocol(env = process.env) {
-  return env.ANTHROPIC_BASE_URL ? 'anthropic' : null
+  return env.PONOS_BASE_URL ? 'anthropic' : null
 }
 
 // usage 归一化：扩展 cache_read/cache_creation（deepseek 系）
-function normalizeUsage(u = {}) {
-  const cacheRead = u.cache_read_input_tokens ?? 0
-  return {
-    input_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
-    output_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
-    cache_read_input_tokens: cacheRead ?? 0,
-    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
-  }
-}
+//
+// 【2026-09-18 P0-1】补**跨协议**缓存字段别名 + 口径归一。此前只认
+// `cache_read_input_tokens`，端点若回传别的形态，命中数被读成 0，且**全程静默**：缓存观测
+// （stats 命中率）、成本统计、预算熔断同时失真——所有缓存优化都变成在黑箱里做，这是整个
+// "前缀缓存"议题的验收前提。
+// 三家形态（按回传字段区分，不靠 baseUrl 猜）：
+//   ・Anthropic：`input_tokens` + `cache_read_input_tokens`（input **不含** read 部分）
+//   ・DeepSeek 原生：`prompt_tokens` + `prompt_cache_hit_tokens`
+//   ・OpenAI 形态：`prompt_tokens` + `prompt_tokens_details.cached_tokens`
+//                 （Responses API 为 `input_tokens_details.cached_tokens`）
+// 后两者的 `prompt_tokens` **都含**命中部分（hit 是它的子集）⇒ 归一到 Anthropic 语义时
+// 必须把命中数从 input 里扣掉，否则命中部分被按全价再计一次（重叠计费、成本虚高）。
+// 「含/不含」的判定只看用了哪个顶层字段：用 `prompt_tokens` 者一律含，用 `input_tokens` 者不含
+// （Anthropic 官方语义），这样混合形态（`prompt_tokens` + 显式 cache_read）也能正确归位。
+//
+// 与 `docs/superpowers/plans/2026-09-18-prefix-cache-observability.md`（worktree 备份态
+// `.preworktree`）v2 增补 **A4** 的关系：A4 只列了 OpenAI 两条别名、并主张"不动既有语义"；
+// 本实现**合并**其 OpenAI 别名（勿重复添加），并额外做了 ① DeepSeek 原生别名
+// ② 上面这层口径归一——因为按 A4 原样接线时，OpenAI/DeepSeek 形态仍会重叠计费（A4 的
+// "不动语义"在只考虑 Anthropic 时成立，跨形态则不成立）。两处合并后为完整集合。
+// 与 `docs/superpowers/plans/2026-09-18-prefix-cache-observability`（**已在 worktree 分支
+// `feat/prefix-cache-observability` 实施完毕**，33 提交）的关系——三处必须拉平：
+//   ① **OpenAI 两条别名**（A4 / 该分支 Task 1）：与本实现完全一致，勿重复添加。
+//   ② **`cache_fields_reported` 存在性信号**（该分支 Task 1 ★）：本实现**照抄保留**。它与
+//      "值为 0"完全不同：缺此信号，判定层无法区分「本轮真未命中（read=0）」与「端点根本
+//      没有该字段」，而二者处置相反（前者是 suspicious 候选，后者必须静默）。**必须先取
+//      原始值再兜 0**——`?? 0` 一旦在前，存在性会在到达判定层前被销毁。
+//   ③ **口径归一（扣减）**：该分支评审 **Major-2** 已识别此问题但裁定「只记录、本次不修」
+//      （理由：权威规格明令"不动既有语义"，口径变更须先有上游确认与观测对账）。本实现
+//      **经用户批准做了归一**，故此处与那个裁定**有意不同** ⇒ **合并该分支时须在此对账**：
+//      保留扣减，并把 Major-2 的"已修"结论回填到其评审记录（其描述的现象——hitRatio 被
+//      压低、total 偏大——正是本条修复的对象）。
+// ↑ 上述 P0-1 口径记录**留在本文件**（它是三处合并对账的原始出处）。
+// 实现已搬至 kernel/wire/usage.mjs，供 Anthropic 与 OpenAI 两个解析器共用（单一真源）。
+// ★ 2026-10-09 合并对账（本条即上文 ③ 承诺的落账）：分支本地 normalizeUsage 已整体
+//   让位 wire/usage.mjs（别名×3、扣减、存在性信号俱全）；Major-2"只记录不修"的结论
+//   自本合起**作废**——扣减已修（PR 记录随分支合并归档）。
 
 // 累计口径单调合并（usage 去重）：Anthropic 流里 message_delta.usage 是"到该点的
 // 累计快照"，且常只带 output_tokens（input 在 message_start 已报全量）；逐字段直接
 // 覆盖会丢 input/cache，逐次相加会把累计值重复计。按字段取最大值即得正确终值，
 // 同时天然把网关重发/分段多次 delta 的同值快照去重。
+// 注意：第 5 键 cache_fields_reported 必须**显式合并**（取或）——它是布尔，漏掉即
+// `undefined` 传染，下游 cacheStats 退化为旧启发式（该分支 Task 1 已踩过此坑）。
 function mergeCumulativeUsage(a, b) {
   return {
     input_tokens: Math.max(a.input_tokens, b.input_tokens),
     output_tokens: Math.max(a.output_tokens, b.output_tokens),
     cache_read_input_tokens: Math.max(a.cache_read_input_tokens, b.cache_read_input_tokens),
     cache_creation_input_tokens: Math.max(a.cache_creation_input_tokens, b.cache_creation_input_tokens),
+    // ★ 存在性信号**取或**（不是 max：布尔没有大小序，max 对 false/true 恰好等价，但语义上
+    //   要说清是"任一分片报过即视为端点上报"）。message_delta 的累计快照常只带 output_tokens
+    //   （input/cache 在 message_start 已报全量）⇒ 若按"取最后一片"会因末片缺字段而把端点
+    //   误判成无缓存能力，整条观测链在该端点静默。逐字段 max 之外的第五个键必须显式合并，
+    //   漏掉即 `undefined` 传染（下游 cacheStats 退化为旧启发式）。
+    cache_fields_reported: Boolean(a.cache_fields_reported || b.cache_fields_reported),
   }
 }
 
@@ -154,16 +154,76 @@ export function createAnthropicParser() {
   // **从未**解析成功过（这正是桥侧"散文兜底"存在的原因）。与 text 共用同一切分器，
   // 标记不再被切开；模型耗时/推理内容本身不变，只是帧粒度变粗（默认 16 字）。
   let thinkBuf = ''
-  let usage = { input_tokens: 0, output_tokens: 0 }
+  // 思考块**完整副本**（2026-10-22 thinking 回放）：DeepSeek /anthropic 等推理端点要求
+  // 把上一轮 assistant 的 `content[].thinking` 原样回传（带 tools 的工具轮回放尤其强制，
+  // 缺块直接 400「The content[].thinking in the thinking mode must be passed back」）。
+  // 上面的 thinkBuf 只承载**分段后的实时帧**（给 GUI 上屏，粒度被 segmentText 改过），
+  // 不能用来回放；这里按 content_block index 另存原始 text + signature。签名随
+  // `signature_delta` 到达（DeepSeek 可能给占位值或空串，官方不校验；真 Anthropic 校验），
+  // 在 content_block_stop 时整块产出一次 `{type:'thinking_block'}`。
+  const thinkSlots = new Map() // key(index|'__last') -> { text, signature }
+  let lastThinkKey = null
+  let usage = normalizeUsage({})
+  // ↑ 初值必须含全部 4 字段（经 normalizeUsage 取单一真源），不能写成 {input,output} 两字段：
+  // 【2026-09-18 P0-1 顺带修的缺陷】某些兼容端点只发 message_delta.usage、不发
+  // message_start.message.usage，此时 mergeCumulativeUsage 与两字段初值做
+  // Math.max(undefined, n) ⇒ **NaN 贯穿**命中数与写缓存数，且 NaN 参与的成本比较恒 false，
+  // 预算守卫会静默失效（不报警、不拦截）。此前未暴露：Anthropic 官方与 DeepSeek /anthropic
+  // 都发 message_start.usage（normalizeUsage 会整体替换成 4 字段），掩盖了这条路径。
+  // （分支侧"两键初值＋只补新键"的写法被此修复取代：normalizeUsage({}) 已含全部 5 键。）
   let lastUsageKey = null // 最近一次已 push 的 usage 快照指纹（同值快照去重）
   let stopReason = null
+  /** 收尾所有未关闭的思考槽（兼容端点可能省略 content_block_stop）。 */
+  const drainThinkSlots = (out) => {
+    for (const slot of thinkSlots.values()) {
+      out.push({ type: 'thinking_block', thinking: slot.text || slot.inline || '', signature: slot.signature })
+    }
+    thinkSlots.clear()
+    lastThinkKey = null
+  }
   return {
     feed(payload) {
       const out = []
       const dt = payload.delta
       const hasIdx = Number.isInteger(payload.index)
+      // 【2026-09-23 流式序修复】把 text/thinking 的押后余量吐净。segmentText 会把
+      // "不足阈值且无段落界"的尾巴留在缓冲里（原本**只在 finish() 流末**吐净），而
+      // tool_use 在 content_block_stop 就上 wire ⇒ 工具前的**短引导语**（十几个字、无空行，
+      // 正是常见形态）整段被押到流末、跑到工具卡片之后，实时视图显示"卡片 → 正文"，
+      // 与磁盘落盘序（思考 → 正文 → 工具）相反（用户实测："正文被过快出现的卡片打断"）。
+      // 块边界（start/stop）就是该块内容的终点，此时吐净即可让实时序与磁盘序一致。
+      // 只释放、不丢弃 ⇒ 不引入丢字；标记完整性由 finish() 路径继续保证（未闭合注释
+      // 仍按 holdStart 押后，故此处在标记中途也不会切开标记）。
+      const flushPending = () => {
+        if (thinkBuf) { out.push({ type: 'thinking', text: thinkBuf }); thinkBuf = '' }
+        if (textBuf.trim()) { out.push({ type: 'text', text: textBuf }) }
+        textBuf = ''
+      }
       if (payload.type === 'content_block_start') {
+        flushPending() // 上一块收尾（兼容端点可能省略 content_block_stop）
+        drainThinkSlots(out) // 新块开始 = 上一思考块已结束（同上兼容动机）
         const cb = payload.content_block
+        if (cb?.type === 'thinking') {
+          // 少数端点把整段内联在 content_block.thinking、signature 内联在 content_block.signature
+          // （与 tool_use 的 inline.input 同形）。delta 优先：只有全程没有 delta 才用 inline，
+          // 否则「inline 首段 + deltas」会重复计一遍。
+          const key = hasIdx ? payload.index : '__last'
+          const inline = typeof cb.thinking === 'string' && cb.thinking ? cb.thinking : ''
+          thinkSlots.set(key, {
+            text: '',
+            inline,
+            signature: typeof cb.signature === 'string' ? cb.signature : '',
+          })
+          lastThinkKey = key
+          if (inline) {
+            // 实时面同步展示（与 delta 相同切分器；进度标记不丢）
+            thinkBuf += inline
+            const it = segmentText(thinkBuf, 'thinking')
+            let n = it.next()
+            while (!n.done) { out.push(n.value); n = it.next() }
+            thinkBuf = typeof n.value === 'string' ? n.value : ''
+          }
+        }
         if (cb?.type === 'tool_use') {
           const key = hasIdx ? payload.index : '__last'
           toolSlots.set(key, {
@@ -185,11 +245,24 @@ export function createAnthropicParser() {
           while (!n.done) { out.push(n.value); n = it.next() }
           textBuf = typeof n.value === 'string' ? n.value : ''
         } else if (dt.type === 'thinking_delta' && dt.thinking) {
+          // 回放副本按**原始 delta**累积（不经 segmentText），保证与上游逐字一致；
+          // 签名端点对思考文本的完整性校验以这段文本为准。
+          const key = hasIdx ? payload.index : (lastThinkKey ?? '__last')
+          let slot = thinkSlots.get(key)
+          if (!slot) { slot = { text: '', inline: '', signature: '' }; thinkSlots.set(key, slot) }
+          slot.text += dt.thinking
+          lastThinkKey = key
           thinkBuf += dt.thinking
           const it = segmentText(thinkBuf, 'thinking')
           let n = it.next()
           while (!n.done) { out.push(n.value); n = it.next() }
           thinkBuf = typeof n.value === 'string' ? n.value : ''
+        } else if (dt.type === 'signature_delta' && typeof dt.signature === 'string') {
+          // Anthropic 真端点的签名分片（通常一片到齐）。缺槽时静默忽略——没收到过
+          // thinking_delta 的签名不属于任何思考块，硬造一个空块只会污染回放面。
+          const key = hasIdx ? payload.index : lastThinkKey
+          const slot = key === null || key === undefined ? undefined : thinkSlots.get(key)
+          if (slot) slot.signature += dt.signature
         } else if (dt.type === 'input_json_delta' && dt.partial_json) {
           // 按 index 落槽；缺 index 回退最后一个未收尾块
           const key = hasIdx ? payload.index : lastToolKey
@@ -197,9 +270,24 @@ export function createAnthropicParser() {
           if (slot) slot.inputJson += dt.partial_json
         }
       } else if (payload.type === 'content_block_stop') {
+        // 思考块收尾：整块（原始文本 + 签名）产出一次，供落盘/下一轮回放。
+        // 两个槽表**分开**取 key：缺 index 的旧式端点上 lastThinkKey/lastToolKey 各自指向
+        // 自己那类未收尾块，混用一个 key 会让另一类槽永远收不了尾。
+        const thinkKey = hasIdx ? payload.index : lastThinkKey
+        const thinkSlot = thinkKey === null || thinkKey === undefined ? undefined : thinkSlots.get(thinkKey)
         // 只对"该 index 上确实有 tool_use 槽"才产出——文本/思考块的 stop 不再误触发
         const key = hasIdx ? payload.index : lastToolKey
-        const slot = key === null ? undefined : toolSlots.get(key)
+        const slot = key === null || key === undefined ? undefined : toolSlots.get(key)
+        // 块收尾即该块内容的终点 ⇒ 先吐净余量再吐本块产出，保证 思考→正文→工具 的顺序
+        // （见 flushPending 注释：不吐净则短正文被押到流末、跑到工具卡片之后）。
+        flushPending()
+        // 完整思考块紧跟实时尾巴之后（实时帧 → 完整块 → 正文 → 工具）：collector 侧
+        // 按这个顺序把 buf 与 block 分别记账，落盘序与上屏序一致。
+        if (thinkSlot) {
+          out.push({ type: 'thinking_block', thinking: thinkSlot.text || thinkSlot.inline || '', signature: thinkSlot.signature })
+          thinkSlots.delete(thinkKey)
+          if (lastThinkKey === thinkKey) lastThinkKey = null
+        }
         if (slot) {
           let input
           if (slot.inputJson) {
@@ -235,6 +323,8 @@ export function createAnthropicParser() {
       thinkBuf = ''
       if (textBuf.trim()) out.push({ type: 'text', text: textBuf })
       textBuf = ''
+      // 流末仍未收到 content_block_stop 的思考块也要保住（否则回放会缺块 → DeepSeek 400）
+      drainThinkSlots(out)
       return out
     },
     usage() { return usage },
@@ -243,6 +333,24 @@ export function createAnthropicParser() {
 }
 
 const MOCK_USAGE = { input_tokens: 10, output_tokens: 20 }
+// 前缀缓存观测夹具的请求序号（2026-09-18 spec §9.1）：mockStream 每次调用 = 1 请求，
+// 每请求取一段 ⇒ 严格按请求推进。模块级：同进程内跨请求保持（每个 spawn 新进程自然归零）。
+let mockCacheSeqN = 0
+
+// `big:<字符数>` 夹具的正文（2026-09-18 Task 6）：确定性 ASCII 文本，每行 100 字符，
+// 行数 = ceil(字符数/100)，故 Read 出来的工具结果体量≈请求值（Read 会加行号前缀，偏差在
+// 个位数百分比内）。**刻意不含 CJK**：中文按密度 1 计价（context.mjs 头注），会让同样的
+// 字符数得到约 4 倍 token，使"体量旋钮"与 token 估算脱钩、影响测试可读性。
+function bigFixtureText(chars) {
+  const perLine = 100
+  const total = Math.max(1, Math.ceil(Math.max(perLine, Math.floor(chars)) / perLine))
+  const lines = []
+  for (let i = 0; i < total; i++) {
+    const head = `line-${String(i).padStart(5, '0')}-`
+    lines.push(head + 'x'.repeat(Math.max(1, perLine - head.length)))
+  }
+  return lines.join('\n')
+}
 
 // 模拟流式文本：切 3 段，段间短暂停顿使 cancel 可中断
 async function* streamText(text, signal) {
@@ -258,6 +366,30 @@ async function* streamText(text, signal) {
 }
 
 async function* mockStream({ messages, signal }) {
+  // 思考块持久化测试（2026-09-23）：PONOS_MOCK_THINKING=1 → 每次请求先产出两段
+  // thinking、再产出文本。用于断言"思考条目落盘且排在该迭代 assistant 条目之前"。
+  // 放最前（任何历史形态都接管），保证逐次请求形态稳定可断言。
+  if (process.env.PONOS_MOCK_THINKING === '1') {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'thinking', text: '思考甲' }
+    yield { type: 'thinking', text: '思考乙' }
+    // 子 lane 落盘顺序靶点（2026-09-23 Task 3）：子 lane 的 assistant 落盘点全在**工具迭代**
+    // （无工具调用即收尾、不写 assistant 条目），只产文本时"思考先于该迭代 assistant"这条
+    // 顺序断言不出来——transcript 里根本没有 assistant 可比。PONOS_MOCK_THINKING_TOOL=1 →
+    // 首个请求（历史无 tool_result）额外产出一个 Bash 工具轮，使思考与该轮 assistant 落在
+    // 同一迭代；后续请求沿用原纯文本收尾形态。未设本变量时行为逐字不变（主循环用例不受影响）。
+    const sawToolResult = (messages || []).some((m) => m?.role === 'user' && Array.isArray(m?.content) &&
+      m.content.some((b) => b?.type === 'tool_result'))
+    if (process.env.PONOS_MOCK_THINKING_TOOL === '1' && !sawToolResult) {
+      yield { type: 'tool_use', id: `tool_use_think_tool_${Math.floor(Math.random() * 1e9)}`, name: 'Bash', input: { command: 'echo lane-think-ok' } }
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+    yield* streamText('收到。', signal)
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // —— agent loop 守卫测试分支（engine-guard-*.test.mjs，env 门控）——
   // 循环工具模拟：PONOS_MOCK_LOOP=ok|fail → 每次请求都产出 Bash 工具轮（无视
   // tool_result 轮回显拦截，模拟模型"不断发同样工具"）。必须放最顶（任何历史形态
@@ -273,6 +405,114 @@ async function* mockStream({ messages, signal }) {
       input: { command: mockLoop === 'fail' ? 'exit 1' : 'echo mock-loop-ok' },
     }
     yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 前缀缓存观测夹具（2026-09-18 spec §9.1）：PONOS_MOCK_CACHE_SEQ="in:10000,read:90000|..."
+  // 按请求序号取段（越界取最后一段 ⇒ 稳态只需写一段），字段 in/read/new/out/tool。
+  // ★ 已知限制（评审 Finding 3；**只写清语义，不改行为**）：这个"请求序号"计的是
+  //   **mockStream 调用数**，不是"主请求数"——
+  //     · 摘要请求等**额外模型调用**同样消耗一段（压缩的摘要调用走的就是同一条 mockStream）；
+  //     · 下方的 `mockCacheSeqN++` 排在 `signal?.aborted` 检查**之前**，故被 abort 取消的
+  //       调用也照样消耗一段。
+  //   于是若与"压缩 + 本夹具"在**同一进程**里联用，序列推进会快于 `[cache]` 行的 `req`
+  //   ——二者**错位**；而"越界取最后一段"的兜底会把这种错位**掩盖成重复值**（看起来像稳态），
+  //   极难诊断。⇒ 联用时必须先核对本计数器与 `[cache] req` 是否对齐，再解释三态。
+  // **为什么新开分支**：MOCK_USAGE 被 58 处 yield 引用，全替换改动面大且无收益；
+  // 本分支只在显式设 env 时接管 ⇒ 零回归。位置在 LOOP 之后（LOOP 有"必须放最顶"的
+  // 优先权），其余分支各有独立 env，互不抢先。
+  if (process.env.PONOS_MOCK_CACHE_SEQ) {
+    const seq = String(process.env.PONOS_MOCK_CACHE_SEQ).split('|')
+    const seg = seq[Math.min(mockCacheSeqN, seq.length - 1)]
+    const u = {
+      input_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 20,
+      // ★ 存在性信号必须显式带上（2026-09-18 cacheStats 语义修订的跨任务一致性要求）：
+      //   本分支**不经 normalizeUsage**（直接 yield 字面量 usage，故存在性不会被 `?? 0` 销毁
+      //   也不会被自动补上），而 cacheStats.supported 现由「端点是否**上报**缓存字段」驱动。
+      //   缺此键 ⇒ 退化启发式 `read + create > 0` ⇒ 序列里 read:0 的那一步被判
+      //   cache-fields-vanished（判据 ③）而非预期的 cache-drop（判据 ⑤）——二者在 [cache]
+      //   行上都只是 st=suspicious，肉眼与断言都分不出来。真实 Anthropic 端点总是如实上报
+      //   这两个字段，夹具必须与之同构。默认 MOCK_USAGE **刻意不带**该键（证明"端点无缓存
+      //   字段 ⇒ 静默 unsupported"仍成立，见 engine-cache-obs.test.mjs）。
+      cache_fields_reported: true,
+    }
+    // tool=1 → 本段改为"工具轮"（产出一次非高危 Bash，先例 [mock:tool-safe]）。**为什么需要**：
+    //   观测器是**轮内局部量**（engine.mjs 的 runTurnInternal 里 createCacheObserver），跨轮不
+    //   复用比较基准 ⇒ "一轮一请求"的形态下相邻比较永远不存在，三态判定（尤其 suspicious）
+    //   端到端**不可达**。要观测相邻请求的骤降，就必须把两次请求放进**同一轮**，而工具轮是
+    //   唯一能让引擎在同一轮里再发一次请求的机制。默认关（不写 tool=1 时行为与无此键完全一致）。
+    let withTool = false
+    let bigChars = 0
+    for (const kv of seg.split(',')) {
+      const idx = kv.indexOf(':')
+      if (idx < 0) continue
+      const key = kv.slice(0, idx).trim()
+      const n = Number(kv.slice(idx + 1)) || 0
+      if (key === 'in') u.input_tokens = n
+      else if (key === 'read') u.cache_read_input_tokens = n
+      else if (key === 'new') u.cache_creation_input_tokens = n
+      else if (key === 'out') u.output_tokens = n
+      else if (key === 'tool') withTool = n > 0
+      else if (key === 'big') bigChars = n
+    }
+    mockCacheSeqN++
+    if (signal?.aborted) throw abortError()
+    // big:<字符数> → 本段改为"大体积工具轮"（2026-09-18，Task 6 夹具增强）——**为什么需要**：
+    //   归因 `cause=post-aged` 要求压缩链路真的发生**老化清除**（compact.mjs 的
+    //   `ageOutToolResults`），而老化需要 est 同时越过两道门（token 阈值 + clearRatio 门槛，
+    //   见 compact.mjs:1003/1011）；原夹具的 tool 轮只 `echo cache-seq-N`（体量几十字节），
+    //   est 永远够不着门槛 ⇒ `action=aged` **不可达** ⇒ 端到端的 post-aged 无法验证。
+    // 形态选择（Read 大文件而不是 Bash 大输出）：① Read 结果**豁免**落盘替换
+    //   （engine.mjs:1443 与 applyAggregateResultBudget 的 Read 例外）⇒ 大内容真的留在
+    //   模型输入里，不会被 `<persisted-output>` 预览悄悄缩掉；② Read 属
+    //   `REPLAYABLE_TOOLS`（compact.mjs:27）⇒ **可被老化清除**，正是本夹具要触发的那条路径。
+    // 幂等与隔离：文件写在 `PONOS_CONFIG_DIR`（无则 cwd）下，按**请求序号**命名
+    //   （`cache-seq-big-<N>.txt`）⇒ 同进程内多次 big 段互不覆盖，也绕开 Read 的
+    //   "文件自上次读取后未变化"去重（那会让第二次读取返回短文，静默缩掉体量）。
+    // 行数上限：Read 单次上限 2000 行（tools.mjs READ_MAX_LINES）⇒ 每行 100 字符、
+    //   行数 = ceil(n/100)，调用方保持 n ≤ 190_000 才不会触发"未读完"提示。
+    // 默认关：不在段里写 big: 时行为与无此键**逐字一致**（withTool 分支不变）。
+    // ★ Minor-6（2026-09-18 评审）：big: 有**两条静默退化路径**，且**不做清理**——
+    //   ① 写盘失败（`mkdirSync`/`writeFileSync` 抛错，如目录只读）⇒ `file = null` ⇒ 工具调用
+    //      退化成**相对路径** `cache-seq-big-<N>.txt`（通常 Read 报"文件不存在"）；调用方的
+    //      est 断言会紧接着变红，故对夹具是**可见**失败，但对"只看 [cache] 行"的读者是静默的。
+    //   ② **本进程**把 `file_path` 记为绝对路径（写盘成功时），但**消费它的 Read 在另一处**：
+    //      若该绝对路径落在 Read 的 `--add-dir` 白名单之外，读会被**拒**（同样静默退化成
+    //      小/空结果）。当前所有调用点都把 configDir 同时作为 add-dir，故未触发；**新增调用点
+    //      必须保持这个不变式**（configDir ⊆ add-dirs），否则夹具会静默失去"大体积"效果。
+    //   残留：文件留在 `PONOS_CONFIG_DIR || process.cwd()` 下且**无人清理**——kernel-tests /
+    //      本仓实验都在临时目录里跑并 `rmSync`，故只有**手工**在真实目录里用 big: 会残留
+    //      `cache-seq-big-*.txt`（诊断夹具的既有取舍，不为此加清理逻辑、不动产品行为）。
+    if (bigChars > 0) {
+      await sleep(MOCK_SLEEP_MS)
+      let file = null
+      try {
+        const dir = process.env.PONOS_CONFIG_DIR || process.cwd()
+        file = join(dir, `cache-seq-big-${mockCacheSeqN}.txt`)
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(file, bigFixtureText(bigChars), 'utf-8')
+      } catch { file = null } // 退化路径①：落盘失败 ⇒ 相对路径（详见上方 Minor-6 两条路径）
+      yield {
+        type: 'tool_use',
+        id: `tool_use_mock_cache_big_${mockCacheSeqN}`,
+        name: 'Read',
+        input: { file_path: file || `cache-seq-big-${mockCacheSeqN}.txt` },
+      }
+      yield { type: 'usage', usage: u }
+      return
+    }
+    if (withTool) {
+      await sleep(MOCK_SLEEP_MS)
+      // 命令带请求序号：避免与引擎"连续相同工具调用"守卫（repeatStreak）撞上——本夹具的目的是
+      // 让每请求都真发出去，不被提醒/自愈注入插队。
+      yield { type: 'tool_use', id: `tool_use_mock_cache_${mockCacheSeqN}`, name: 'Bash', input: { command: `echo cache-seq-${mockCacheSeqN}` } }
+      yield { type: 'usage', usage: u }
+      return
+    }
+    yield* streamText(`缓存观测夹具：第 ${mockCacheSeqN} 次请求`, signal)
+    yield { type: 'usage', usage: u }
     return
   }
   // 系统提示探针（2026-09-12 lane 技能目录测试）：PONOS_MOCK_SYS_PROBE=<needle> →
@@ -292,6 +532,24 @@ async function* mockStream({ messages, signal }) {
     yield* streamText(`SYS_PROBE:${bits}`, signal)
     yield { type: 'usage', usage: MOCK_USAGE }
     return
+  }
+  // 失真锚点注入探针（2026-09-15）：PONOS_MOCK_ANCHOR_PROBE=<needle> → 每轮把请求体内
+  // **任意非 system 条目**是否含该子串，写成 stderr 一行 `ANCHOR_PROBE:<bits>`（多针用
+  // `|` 分隔、回 bit 串）。**旁路观测，不改变响应**：早期版本命中即 return，会顶掉
+  // scripted 场景（[mock:fidelity-read-fail] 被截胡 → 失真场景根本建不起来）；而 mock
+  // 的场景状态是会话级持续的，仅"消息不含 [mock: 时才探测"也会漏掉后续轮次。
+  // 必要性：锚点是纯派生（不落盘、不发事件），只断言 ponos_health 带 anchorText 只能
+  // 证明"检测到了"，证明不了"锚点真进了发给模型的请求"——stderr 探针是唯一口子。
+  if (process.env.PONOS_MOCK_ANCHOR_PROBE) {
+    try {
+      const needles = String(process.env.PONOS_MOCK_ANCHOR_PROBE).split('|')
+      const bodyText = (messages || [])
+        .filter((m) => m?.role !== 'system')
+        .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).map((b) => b?.text || '').join('')))
+        .join('\n')
+      const bits = needles.map((n) => (bodyText.includes(n) ? '1' : '0')).join('')
+      process.stderr.write(`[mock-anchor-probe] ANCHOR_PROBE:${bits}\n`)
+    } catch { /* 观测失败不影响 mock 响应 */ }
   }
   // 输出截断自愈模拟（2026-09-12 engine-continue-heal 测试）：PONOS_MOCK_TRUNCATE_CONT=1 →
   // 历史无续写指令时产出部分文本 + max_tokens 截断 stop_reason；续写指令出现后产出
@@ -322,7 +580,7 @@ async function* mockStream({ messages, signal }) {
   if (tooBig) {
     process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
     if (Buffer.byteLength(JSON.stringify(messages || [])) > Number(tooBig[1] || 50_000)) {
-      const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 40000 tokens. However, you requested 8192 output tokens and your prompt contains at least 41000 input tokens, for a total of at least 49192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
+      /** @type {ApiError} */ const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 40000 tokens. However, you requested 8192 output tokens and your prompt contains at least 41000 input tokens, for a total of at least 49192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
       e.status = 400
       throw e
     }
@@ -406,7 +664,7 @@ async function* mockStream({ messages, signal }) {
   // 瞬时错误模拟（P0-1 retry 测试）：PONOS_MOCK_TRANSIENT=once 首次调用抛网络层错误
   if (process.env.PONOS_MOCK_TRANSIENT === 'once' && process.env.PONOS_MOCK_TRANSIENT_CONSUMED !== '1') {
     process.env.PONOS_MOCK_TRANSIENT_CONSUMED = '1'
-    const err = new Error('内核：API 请求失败 503 fetch failed')
+    /** @type {ApiError} */ const err = new Error('内核：API 请求失败 503 fetch failed')
     err.status = 503
     throw err
   }
@@ -483,10 +741,82 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 长前台工具（2026-09-21 长任务可靠性 P2）：产一个"跑得比硬看门狗阈值久"的 Bash 调用，
+  // 用于验收「在飞工作期间内核不得被硬看门狗误杀」（活性心跳的放行路径）。
+  // 工期由 PONOS_MOCK_TOOL_LONG_MS 控制（默认 6000）：须 > 硬看门狗阈值、< 工具 deadline。
+  // 与 [mock:tool-timeout] 恰成对照：那条是"工具**超时**结束"（在忙，但有 tool_result 收口），
+  // 这条是"工具正常跑很久"——期间**零 wire 输出**，正是被旧判据误杀的那种形态。
+  // 只为**首轮**发 tool_use：tool_result 回来后落到下面的工具结果回合正常收尾（否则永远
+  // 等不到 result）。计数沿用本文件既有惯例（process.env 计数，子进程天然复位）。
+  if (JSON.stringify(messages || []).includes('[mock:tool-long]')) {
+    if (Number(process.env.PONOS_MOCK_TOOL_LONG_N || 0) === 0) {
+      process.env.PONOS_MOCK_TOOL_LONG_N = '1'
+      if (signal?.aborted) throw abortError()
+      await sleep(MOCK_SLEEP_MS)
+      const longMs = Number(process.env.PONOS_MOCK_TOOL_LONG_MS || 6000)
+      yield* streamText('开始一个较长的前台任务（执行期间不产出任何内容）。', signal)
+      yield {
+        type: 'tool_use',
+        id: `tool_use_long_${Math.floor(Math.random() * 1e9)}`,
+        name: 'Bash',
+        input: { command: `node -e "setTimeout(()=>{},${longMs})"`, timeout_ms: longMs + 2000 },
+      }
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+  }
+  // 超时活跃/连击（P1 Task 9，2026-09-21）：连续产出"会超时的 Bash 调用"，驱动两件事：
+  // ① 双计时器 —— 模型在等长命令（每批都有超时）不该被误判"无实质进展"（症状①）；
+  // ② 连击预算 —— "在忙"的续命不能变成无限拖延，连续多批全超时须被兜住。
+  // 与 [mock:loop-measure] 恰成对照：那条是"没超时也没进展"（打转），这条是"有超时活动"。
+  // 轮数由 PONOS_MOCK_TIMEOUT_ROUNDS 控制（默认 4），达到后转纯文本收尾防死循环；
+  // 次数按 PONOS_MOCK_TIMEOUT_N 计数（沿用本文件既有惯例，测试每轮开跑前清该变量复位）。
+  // 必须放在"工具结果回合"分支之前 —— 否则任何 tool_result 之后都会立刻文本作答返回。
+  if (JSON.stringify(messages || []).includes('[mock:tool-timeout]')) {
+    const rounds = Number(process.env.PONOS_MOCK_TIMEOUT_ROUNDS || 4)
+    const n = Number(process.env.PONOS_MOCK_TIMEOUT_N || 0) + 1
+    process.env.PONOS_MOCK_TIMEOUT_N = String(n)
+    if (n > rounds) {
+      yield* streamText('超时探测结束：已按新策略收束 [mock:timeout-done]', signal)
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    // 命令本体远超 timeout_ms ⇒ 每轮必然以"工具超时"结束（timeout 标记进 toolResults）
+    yield* streamText(`第 ${n} 次长命令（预期超时）。`, signal)
+    yield {
+      type: 'tool_use',
+      id: `tool_use_timeout_${n}_${Math.floor(Math.random() * 1e9)}`,
+      name: 'Bash',
+      input: { command: 'node -e "setTimeout(()=>{},10000)"', timeout_ms: 250 },
+    }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // 工具结果回合：仅当"最后一条消息"为 tool_result 轮才报告执行结果（引擎工具
   // 循环第二轮）。不得用"历史中任意 tool_result"判定——跨轮连续调用 [mock:tool]
   // 时，上一轮被拒绝的 tool_result 残留在历史里，会让 mock 误走结果回显分支而
   // 永远不再产出 tool_use（denial 降级测试复现，2026-08-21 修复）。
+  // 同族重试模拟（P0-3，2026-09-16）：验证"灾难命令被拒后，模型改写/升权再试"必须被
+  // **直接硬拒**而不是再次弹窗。**必须放在"工具结果回合"分支之前**——那个分支会在任何
+  // tool_result 之后立刻文本作答返回，永远走不到下面的标记分支，也就模拟不出同轮重试。
+  // 用法：一轮内第 1 次发 `rm -rf /`，第 2 次发**同族改写变体** `rm -rf /*`（刻意不字面
+  // 相同：字面比对挡不住的那种，正是族粒度拦截要证明的），第 3 次起落到下面的结果回显
+  // 分支让轮次正常结束。次数按 PONOS_MOCK_CATA_RETRY_N 计数（沿用本文件 overflow 计数
+  // 的既有惯例），测试在每轮开跑前清该变量即可复位。
+  if (lastText.includes('[mock:catastrophic-retry]') || JSON.stringify(messages || []).includes('[mock:catastrophic-retry]')) {
+    const nth = Number(process.env.PONOS_MOCK_CATA_RETRY_N || 0) + 1
+    process.env.PONOS_MOCK_CATA_RETRY_N = String(nth)
+    if (nth <= 2) {
+      if (signal?.aborted) throw abortError()
+      await sleep(MOCK_SLEEP_MS)
+      const command = nth === 1 ? 'rm -rf /' : 'rm -rf /*'
+      yield { type: 'tool_use', id: `tool_use_mock_cata_retry_${nth}`, name: 'Bash', input: { command } }
+      yield { type: 'usage', usage: MOCK_USAGE }
+      return
+    }
+  }
   const lastMessage = (messages || [])[messages.length - 1]
   const lastIsToolResult = lastMessage?.role === 'user' &&
     Array.isArray(lastMessage.content) && lastMessage.content.some((b) => b?.type === 'tool_result')
@@ -509,7 +839,7 @@ async function* mockStream({ messages, signal }) {
       if (overflowMode === 'once') process.env.PONOS_MOCK_OVERFLOW_CONSUMED = '1'
       if (overflowMode === 'always') {
         process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
-        const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 131072 tokens. However, you requested 64000 output tokens and your prompt contains at least 70000 input tokens, for a total of at least 134000 tokens. Please reduce the length of the input prompt or max_tokens."}}')
+        /** @type {ApiError} */ const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 131072 tokens. However, you requested 64000 output tokens and your prompt contains at least 70000 input tokens, for a total of at least 134000 tokens. Please reduce the length of the input prompt or max_tokens."}}')
         e.status = 400
         throw e
       }
@@ -526,7 +856,7 @@ async function* mockStream({ messages, signal }) {
   if (largeAt) {
     process.env.PONOS_MOCK_OVERFLOW_COUNT = String(Number(process.env.PONOS_MOCK_OVERFLOW_COUNT || 0) + 1)
     if ((messages || []).length >= Number(largeAt[1] || 8)) {
-      const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 8000 tokens. However, you requested 8192 output tokens and your prompt contains at least 9000 input tokens, for a total of at least 17192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
+      /** @type {ApiError} */ const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 8000 tokens. However, you requested 8192 output tokens and your prompt contains at least 9000 input tokens, for a total of at least 17192 tokens. Please reduce the length of the input prompt or max_tokens."}}')
       e.status = 400
       throw e
     }
@@ -537,6 +867,29 @@ async function* mockStream({ messages, signal }) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
     yield { type: 'tool_use', id: 'tool_use_mock_safe', name: 'Bash', input: { command: 'echo mock-safe' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // P2b 授权（2026-10-15）：**同一次运行内两个 Screen 输入动作**——"一次运行只问一次"的端到端夹具
+  //（见 kernel-tests/screen-input-authorization.test.mjs）。两条 tool_use 落在**同一批**里，
+  // 而 Screen 不是 concurrencySafe ⇒ engine 串行执行，第二个动作的闸门能看到第一个动作批准后的
+  // 运行级记忆 —— 这正是要测的语义（若并发则退化为"问两次"，方向仍是 fail-closed）。
+  // ★ 本夹具**绝不发真实输入**：Screen 的 screenDriver 走 bridge_request，测试里没有主进程，
+  //   由测试自己用 resolveScreen 回桩回执；executor/ps1 两层另有各自的负面测试。
+  // 必须放在 `lastIsToolResult` 早期返回**之后**：那一分支负责在工具结果回来后收尾（否则同轮无限重发工具）。
+  if (lastText.includes('[mock:screen-input-x2]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_screen_click', name: 'Screen', input: { action: 'clickAt', params: { window: 'mock-target', x: 100, y: 200 } } }
+    yield { type: 'tool_use', id: 'tool_use_mock_screen_drag', name: 'Screen', input: { action: 'drag', params: { window: 'mock-target', from: { x: 1, y: 1 }, to: { x: 2, y: 2 } } } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // P2b 授权：**只读 act** 轮（displays）—— 证明只读动作不弹窗、且载荷里授权证据为 false（G6）。
+  if (lastText.includes('[mock:screen-read]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_screen_displays', name: 'Screen', input: { action: 'displays' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -642,7 +995,7 @@ async function* mockStream({ messages, signal }) {
   ))) {
     if (process.env.PONOS_MOCK_LANE_OVERFLOW_FIRED !== '1') {
       process.env.PONOS_MOCK_LANE_OVERFLOW_FIRED = '1'
-      const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 32768 tokens. However, you requested 64000 output tokens and your prompt contains at least 24576 input tokens. Please reduce the length of the input prompt or max_tokens."}}')
+      /** @type {ApiError} */ const e = new Error('内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":"This model\'s maximum context length is 32768 tokens. However, you requested 64000 output tokens and your prompt contains at least 24576 input tokens. Please reduce the length of the input prompt or max_tokens."}}')
       e.status = 400
       throw e
     }
@@ -669,6 +1022,19 @@ async function* mockStream({ messages, signal }) {
     await sleep(MOCK_SLEEP_MS)
     yield { type: 'tool_use', id: 'tool_use_mock_agent_lane_think', name: 'Agent',
       input: { subagent_type: 'general-purpose', prompt: '子任务：请针对 [mock:lane-think] 输出确认' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 子 lane 计划尾守卫测试（2026-09-16 两侧对齐）：触发 Agent tool_use，子任务 prompt
+  // 内嵌 [mock:lane-plan-tail]——lane 侧首轮只产"承诺后续动作"文本（无工具调用），
+  // engine 注入计划尾续跑指令后由下方 R3-2 恢复分支（历史含计划尾注入串）产成功 Bash。
+  // marker 与既有互不子串劫持：'agent-lane-plan-tail' 中 'lane' 前有 'agent-'，
+  // 不匹配 lane 侧要求紧邻 'mock:' 的 [mock:lane-plan-tail]。
+  if (lastText.includes('[mock:agent-lane-plan-tail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_lane_plan_tail', name: 'Agent',
+      input: { subagent_type: 'general-purpose', prompt: '子任务：请针对 [mock:lane-plan-tail] 输出确认并执行' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -786,6 +1152,20 @@ async function* mockStream({ messages, signal }) {
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
+  // 子 lane 计划尾模拟（2026-09-16 两侧对齐 [mock:lane-plan-tail]）：lane 任务 prompt 仍为
+  // 末条 user 文本（lastText 含标记 → 尚未经历注入轮）⇒ 只产**文本**、不产工具调用，且
+  // 文本尾部是"承诺后续动作"（命中 gen-guards 的 PLAN_TAIL_RE）——模拟子任务"只说不做"。
+  // engine 在"无工具轮 break"前应注入计划尾续跑指令（而不直接收尾），随后 R3-2 恢复分支
+  // （历史含【系统】你在上一轮承诺了后续动作串）产成功 Bash，lane 得以继续执行。
+  // 用 lastText 门控（非历史门控）：注入轮之后 lastText 已是注入文案、不再含标记，
+  // 否则会每轮重复产计划尾文本直到 guardInjections 上限，测不出"注入 → 恢复"路径。
+  if (lastText.includes('[mock:lane-plan-tail]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'text', text: '我先看一下这个子任务的输入。接下来我要读取核心表格并核对数据。' }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
   // Read 回归（大结果内联 + 落盘产物边界补读）：[mock:read] <file_path> 触发 Read
   // tool_use。用于断言 ① >20K 的 Read 结果不落盘替换（模型要的就是文件内容，stub
   // 会逼其小段 offset/limit 续读空转）；② 补读 tool-results/ 落盘产物不被边界拒绝
@@ -806,6 +1186,31 @@ async function* mockStream({ messages, signal }) {
     const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
     yield { type: 'tool_use', id: 'tool_use_mock_write_1', name: 'Write', input: { file_path: `${base}/mock-a.txt`, content: 'a' } }
     yield { type: 'tool_use', id: 'tool_use_mock_write_2', name: 'Write', input: { file_path: `${base}/mock-b.txt`, content: 'b' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 跨 Agent 证据面测试：[mock:edit] 触发一次 Edit + 一次 Read
+  // （Edit 产物须计入 outputs；Read 路径须进 task_notification.reads）
+  if (lastText.includes('[mock:edit]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
+    yield { type: 'tool_use', id: 'tool_use_mock_edit_1', name: 'Edit', input: { file_path: `${base}/mock-c.txt`, old_string: 'old', new_string: 'new' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_read_1', name: 'Read', input: { file_path: `${base}/mock-c.txt` } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 跨 Agent 证据面测试（output_file 语义回归锁）：[mock:write-edit-write] 在同一轮产
+  // Write A → Write B → Edit A ⇒ writePaths = [A, B, A]。用于锁住 output_file 仍取"最后
+  // 被写/改的文件"（A），而 outputs 是保序去重的 [A, B]——两者在去重后必须不同。目录
+  // 同 [mock:write]：PONOS_MOCK_WRITE_DIR 指定。
+  if (lastText.includes('[mock:write-edit-write]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    const base = process.env.PONOS_MOCK_WRITE_DIR || process.cwd()
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_1', name: 'Write', input: { file_path: `${base}/mock-a.txt`, content: 'old\n' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_2', name: 'Write', input: { file_path: `${base}/mock-b.txt`, content: 'b' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_wew_3', name: 'Edit', input: { file_path: `${base}/mock-a.txt`, old_string: 'old', new_string: 'new' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -857,6 +1262,17 @@ async function* mockStream({ messages, signal }) {
     if (signal?.aborted) throw abortError()
     await sleep(MOCK_SLEEP_MS)
     yield { type: 'tool_use', id: 'tool_use_mock_agent', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '测试子任务：请输出一句确认' } }
+    yield { type: 'usage', usage: MOCK_USAGE }
+    return
+  }
+  // 同轮多子 Agent 派发：[mock:agent-pair] 在**一条 assistant 消息**里产出两个 Agent
+  // tool_use（测试前台批量并发用）。为什么必须同轮：runToolBatch 的并发判定按"同一批
+  // 内的工具"做，跨轮派发天然串行（第二轮要等第一轮结果回来），测不出并发能力。
+  if (lastText.includes('[mock:agent-pair]')) {
+    if (signal?.aborted) throw abortError()
+    await sleep(MOCK_SLEEP_MS)
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_pair_1', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '同轮子任务 A：请输出一句确认' } }
+    yield { type: 'tool_use', id: 'tool_use_mock_agent_pair_2', name: 'Agent', input: { subagent_type: 'general-purpose', prompt: '同轮子任务 B：请输出一句确认' } }
     yield { type: 'usage', usage: MOCK_USAGE }
     return
   }
@@ -1085,14 +1501,14 @@ async function fetchWithConnectTimeout(url, { method, headers, body, signal }, c
 }
 
 // Anthropic SSE 流：统一产出归一化 chunk。
-export async function* protocolStream({ url, body, headers, signal }) {
+export async function* protocolStream({ url, body, headers, signal, parser = createAnthropicParser() }) {
   // 连接/首字节超时（2026-09-09 挂起事故根因修复）：默认从 30s 提到 600s。
   // 实测网关在 HTTP 层缓冲整个排队+思考阶段（复杂请求响应头 207s 才到），30s
   // 超时会在排队期间反复掐断请求——服务器侧仍在生成（孤儿占用槽位），重试
   // 制造更多孤儿，形成"越重试越挂"的死亡螺旋（实测 8 分钟 19 次重试全灭）。
   // 真正的挂起守卫是 engine 的首字节看门狗（447/480s，abort 信号传导到 fetch）；
   // TCP 连接失败（拒绝/RST）由系统栈秒级报错，不需要 30s 兜底。
-  const connectTimeoutMs = Math.max(0, Number(process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS || 600_000))
+  const connectTimeoutMs = Math.max(0, Number(process.env.PONOS_CONNECT_TIMEOUT_MS || 600_000))
   const extSignal = toAbortSignal(signal)
   // connection: close（2026-09-09 挂起事故修复）：远程网关对半开/复用连接有隐性
   // 限流——kernel 连接堆积（ESTABLISHED+CLOSE_WAIT）后新请求被静默丢弃（实测：
@@ -1112,7 +1528,7 @@ export async function* protocolStream({ url, body, headers, signal }) {
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
     // P0-1：错误携带 HTTP status，供 classifyApiError 结构化分类（5xx 可退避重试）
-    const err = new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
+    /** @type {ApiError} */ const err = new Error(`内核：API 请求失败 ${res.status} ${detail.slice(0, 300)}`)
     err.status = res.status
     throw err
   }
@@ -1122,16 +1538,19 @@ export async function* protocolStream({ url, body, headers, signal }) {
   let usagePushed = false
   let eventCount = 0 // 已成功解析的 SSE 事件数——空流判据：HTTP 200 后 0 事件即上游无产出
   let sseEventName = '' // 当前 SSE `event:` 名（error/ping 判定用；空行/新 event 行覆盖）
-  const parser = createAnthropicParser()
+  // 解析器由调用方注入（2026-09-23 协议兼容）：默认值即 Anthropic 解析器，
+  // 且默认参数**每次调用求值** ⇒ 每次流都是新实例（不会跨请求/跨重连累积状态）。
+  // 本函数以下的逻辑一律协议无关（连接超时、`connection: close`、断流重连、空闲看门狗、
+  // 空流归一、SSE `event:` 名解析、流内错误抛错、usage 终态收敛）——**勿在其中再判协议**。
   // P1-6：单次流读空闲看门狗。默认 300s，但必须跟随首内容宽限校准——若
   // PONOS_STREAM_FIRST_BYTE_MS（provider firstByteMs 注入，如 447s）长于 300s，
   // 本层仍按 300s 掐断会在慢 prefill（实测 362KB 上下文排队 >5min）时形成
   // "每 300s 重发同一请求"的失速循环（2026-09-10 实测 881s 静默告警根因：
   // engine 首字节看门狗 447/600s 还没到，流读先被 300s 掐死 → zeroEvents
   // 无限重试）。大请求（>200K 字符，engine adaptiveFirstByteMs 同门槛）放宽
-  // 到 600s 封顶。显式 CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS 仍权威（测试/用户覆盖）。
+  // 到 600s 封顶。显式 PONOS_STREAM_IDLE_TIMEOUT_MS 仍权威（测试/用户覆盖）。
   const idleTimeoutMs = (() => {
-    const explicit = Number(process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS)
+    const explicit = Number(process.env.PONOS_STREAM_IDLE_TIMEOUT_MS)
     if (Number.isFinite(explicit) && explicit > 0) return explicit
     const fb = Number(process.env.PONOS_STREAM_FIRST_BYTE_MS)
     // 大请求：对齐 engine adaptiveFirstByteMs（>200K 字符 → 600s 上限）
@@ -1223,7 +1642,7 @@ export async function* protocolStream({ url, body, headers, signal }) {
 // R1-1 流中断包装：读阶段 transient 错误 → StreamInterrupted（anthropicStream
 // 外层据此重发完整请求；abort/quota/auth/非 transient 不经此处）
 export function streamInterrupted(err) {
-  const e = new Error('stream interrupted: ' + (err?.message || String(err)))
+  /** @type {ApiError} */ const e = new Error('stream interrupted: ' + (err?.message || String(err)))
   e.name = 'StreamInterrupted'
   e.kind = 'transient'
   return e
@@ -1239,7 +1658,7 @@ export function apiStreamError(ev, eventName = '') {
   const info = (ev && typeof ev.error === 'object' && ev.error) || ev || {}
   const ptype = String(info.type || info.code || (eventName === 'error' ? 'stream_error' : eventName) || 'stream_error')
   const msg = String(info.message || '流内错误事件')
-  const e = new Error(`${ptype}: ${msg}`)
+  /** @type {ApiError} */ const e = new Error(`${ptype}: ${msg}`)
   e.name = 'ApiStreamError'
   e.providerType = ptype
   if (/overloaded|server_error|internal|unavailable|temporarily/i.test(ptype)) e.status = 529
@@ -1262,7 +1681,7 @@ export function deadStreamError(cause) {
 // --enable-auto-tool-choice --tool-call-parser 启动时的原文）。构造器保证 status=400
 // 与线上报文同形，供引擎/mock/测试共用同一文本（改文案即改这里，不会多处漂移）。
 export function toolsUnsupportedError(detail = '') {
-  const e = new Error(`内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":""auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"}}${detail ? `（${String(detail).slice(0, 120)}）` : ''}`)
+  /** @type {ApiError} */ const e = new Error(`内核：API 请求失败 400 {"type":"error","error":{"type":"BadRequestError","message":""auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set"}}${detail ? `（${String(detail).slice(0, 120)}）` : ''}`)
   e.status = 400
   return e
 }
@@ -1274,14 +1693,14 @@ function isCacheRejection(err) {
   return status === 400 || status === 422 || /cache|unknown field|unsupported/i.test(msg)
 }
 
-// 思考深度 → 请求体字段（对齐 Claude Code 档位 + DeepSeek Anthropic 兼容端点：
+// 思考深度 → 请求体字段（对齐自有统一档位 + DeepSeek Anthropic 兼容端点：
 // 深度走 reasoning_effort（low/high/max），关闭走 thinking:disabled；两者不并发生
 // 发，避免 DeepSeek #1397 的 400）。auto/未知 → {}（模型原生自适应，不注入）。
 //
 // **优先级是显式的，且经实测确定（Task 11 探针，2026-09-13，n=8/臂/题）**：
 //   ① 策略关思考（thinkingMode==='off'）或用户 off 档 → thinking:{type:'disabled'}
 //      —— 唯一被实测证明能压掉思考量的手段：中位墙钟 3.1× / 1.5×，且 16/16 全对
-//   ② provider 开了思考模式（CLAUDE_CODE_THINKING_ENABLED=1）→ thinking:{enabled,budget}
+//   ② provider 开了思考模式（PONOS_THINKING_ENABLED=1）→ thinking:{enabled,budget}
 //      —— 唯一真正控制思考量的旋钮（MiniMax 等不显式开启则思考完全不可见）
 //   ③ 其余档位 → reasoning_effort
 // 关键实测（决定了②必须排在③之前，而不是"两害相权"）：在本端点 `reasoning_effort`
@@ -1308,8 +1727,8 @@ export function effortParam(effort, thinkingMode = null) {
   // provider 思考模式（2026-09-10）：MiniMax 等不认 reasoning_effort 的云端，
   // 显式 thinking:enabled+budget 后流内才有 thinking_delta（实测无参数时思考
   // 完全不可见——思考混进 text_delta 或整段隐藏）。auto 档位走本分支。
-  if (process.env.CLAUDE_CODE_THINKING_ENABLED === '1') {
-    const budget = Number(process.env.CLAUDE_CODE_THINKING_BUDGET || 4096)
+  if (process.env.PONOS_THINKING_ENABLED === '1') {
+    const budget = Number(process.env.PONOS_THINKING_BUDGET || 4096)
     const n = Number.isFinite(budget) && budget > 0 ? Math.floor(budget) : 4096
     // 诊断不降级：旧实现对此**完全静默**——用户在设置面板把档位从 low 拉到 max，
     // 线上请求一字未变却无从察觉。落一行（每进程一次）到内核 stderr，可经
@@ -1332,17 +1751,97 @@ function isEffortRejection(err) {
   return (status === 400 || status === 422) && /reasoning_effort|thinking|effort/i.test(msg)
 }
 
+// 是否给 system 打 ephemeral 缓存标记（P0-2，2026-09-18）。
+//
+// 为什么不再用单一手工 env 决定：两家端点的语义**相反且互斥**——
+//   ・Anthropic **官方**：不显式标记 ⇒ 完全不缓存（0 命中，缓存收益全丢）
+//   ・DeepSeek 兼容端点：**忽略** cache_control（官方兼容性表明确列为"忽略"），缓存自动
+//     生效；打了没用，还可能撞"未知字段 400"再触发一次"去标记重发"（多一次往返 + 重复 prefill）
+// 多端点混用下，`PONOS_PROMPT_CACHE` 无论默认开/关都必然对一半端点不合适。改按能力判定：
+//   ① `PONOS_PROMPT_CACHE` 显式 '1'/'0' ⇒ **一律以它为准**（保留既有手工契约与既有测试）
+//   ② 未设 ⇒ 只对"必须显式标记"的端点自动开启（Anthropic 官方 / Bedrock / Vertex）
+//   ③ 其余端点（DeepSeek、本地 vLLM、未知网关）⇒ 保持关闭 = **原有默认行为不变**（零回归）
+// 刻意**不**用 baseUrl 通配去猜"是不是 Anthropic 兼容"：第三方网关的缓存语义无法从域名
+// 推断，猜错要么丢收益、要么引入无谓的 400 重发。要给网关开，显式设 env 即可。
+export function cacheMarkerEnabled(baseUrl = '', env = process.env) {
+  const explicit = String(env.PONOS_PROMPT_CACHE ?? '').trim()
+  if (explicit === '1' || explicit === '0') return explicit === '1'
+  return /anthropic\.com|claude\.ai|bedrock|aiplatform\.googleapis\.com|vertex/i.test(String(baseUrl))
+}
+
+// ── 思考块回放（2026-10-22）────────────────────────────────────────────────────
+// 背景：DeepSeek 的 /anthropic 端点在**思考模式**下要求把上一轮 assistant 的
+// `content[].thinking` 原样回传（带 tools 的工具轮回放尤其强制）；缺块直接
+// 400「The content[].thinking in the thinking mode must be passed back to the API」。
+// session.deriveMessages 现在会把带 tool_use 的 assistant 轮次的 thinking 块并回
+// content 头部；本函数决定"这份历史到底能不能原样发给当前端点"：
+//   · 真 Anthropic 系（anthropic.com / claude.ai / bedrock / vertex）**校验签名**：
+//     无签名的块（旧 transcript、被脱敏改写的块）发出去必 400 ⇒ 丢弃（维持旧行为）；
+//     有签名的块原样回传。
+//   · DeepSeek / MiniMax 等非签名兼容端点：官方要求回放，签名可为空 ⇒ 补 `signature: ''`。
+//   · 本步显式关闭思考（thinking:{type:'disabled'}）时不回放——思考关了还递思考块，
+//     部分端点会当协议冲突拒掉。
+// 纯函数、不改入参（请求面缓存跨调用共享，原地改会污染 transcript 的内存视图）。
+const SIGNING_ANTHROPIC_HOST_RE = /anthropic\.com|claude\.ai|bedrock|aiplatform\.googleapis\.com|vertex/i
+export function prepareMessagesForAnthropicWire(messages = [], { base = '', thinkingDisabled = false } = {}) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages
+  const signing = SIGNING_ANTHROPIC_HOST_RE.test(String(base))
+  let changed = false
+  const out = []
+  for (const m of messages) {
+    // 压缩摘要的派生投影是 **assistant + 字符串 content**（kernel/session.mjs#
+    // compactionSummaryEntry 的既有契约，deriveMessages()[0] 即它）。但上线时必须转成
+    // **user**：DeepSeek /anthropic 在思考模式下从「最后一条真实 user 消息」之后校验
+    // thinking 回放，而 tool_result 消息映射成 role:'tool'、不算 user ⇒ 压缩后若所有
+    // 真实 user 文本都被遮蔽，摘要这个无 thinking 的 assistant 就落进校验区间 ⇒ 400
+    // 「The content[].thinking ... must be passed back」。
+    // ★ 2026-10-22 真机实测（7 个请求逐条对照）：带真实 user 文本的 4 次全 200，
+    //   没有的 3 次全 400，且失败请求的首条恒为摘要、其余 assistant 全带 thinking。
+    //   投影成 user 也符合压缩惯例（摘要=用户侧交代前情），并给校验器一个 user 锚点。
+    //   只改线上副本：落盘/transcript 回放仍以 assistant 条目为真源（compact.mjs 的
+    //   isSealedSummary 等判据依赖 assistant+字符串这一形态，不能动派生层）。
+    if (m && m.role === 'assistant' && typeof m.content === 'string') {
+      changed = true
+      out.push({ ...m, role: 'user' })
+      continue
+    }
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.content)
+      || !m.content.some((b) => b && b.type === 'thinking')) {
+      out.push(m)
+      continue
+    }
+    const content = []
+    let touched = false
+    for (const b of m.content) {
+      if (!b || b.type !== 'thinking') { content.push(b); continue }
+      if (thinkingDisabled) { touched = true; continue }
+      const sig = typeof b.signature === 'string' ? b.signature : ''
+      if (signing && !sig) { touched = true; continue }
+      if (sig) { content.push(b); continue }
+      content.push({ ...b, signature: '' }) // 非签名端点显式空串（DeepSeek 实证接受）
+      touched = true
+    }
+    if (!touched) { out.push(m); continue }
+    changed = true
+    // 思考块被全剥且无其他内容：空 assistant content 非法，整条不发
+    if (content.length) out.push({ ...m, content })
+  }
+  return changed ? out : messages
+}
+
 // Anthropic 协议流：tools 中立形状 → tools[]；system 抽顶层。
-// prompt cache 显式化：PONOS_PROMPT_CACHE=1 且 system 非空时，system 改数组形态并
-// 打 ephemeral 缓存标记（Anthropic 官方端点依赖显式标记命中缓存；DeepSeek 兼容
-// 端点自动缓存，显式标记无害）。端点拒绝该字段时自动去掉标记重发一次（兼容兜底）。
+// prompt cache 显式化：由 cacheMarkerEnabled() 判定（P0-2 起按端点能力，不再只看 env）
+// ——命中时 system 改数组形态并打 ephemeral 缓存标记。端点拒绝该字段时自动去掉标记
+// 重发一次（兼容兜底，见 isCacheRejection）。
 async function* anthropicStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null, thinkingMode = null }) {
   // P4-5：注册表解析（setProvider 激活后固定；未激活 getProvider 现读 env，行为不变）
   const p = getProvider()
+  // 协议相关模型名（Task 1）：未配置 modelByFormat 时与既有行为逐字相同
+  const wireModel = pickModelName({ model, format: 'anthropic', modelByFormat: p.modelByFormat })
   const base = p.baseUrl
   const token = p.authToken
-  if (!base || !token) throw new Error('内核：ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 未配置')
-  const useCache = process.env.PONOS_PROMPT_CACHE === '1' && !!system
+  if (!base || !token) throw new Error('内核：PONOS_BASE_URL / PONOS_AUTH_TOKEN 未配置')
+  const useCache = cacheMarkerEnabled(base) && !!system
   // 鉴权头按 provider.authScheme 选择：默认 x-api-key（anthropic/deepseek/minimax）；
   // vLLM 等本地 Bearer-only 端点配置 authScheme=bearer 后改发 Authorization。
   const headers = { 'content-type': 'application/json', ...authHeaders(p), 'anthropic-version': '2023-06-01' }
@@ -1351,22 +1850,30 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   // 可选固定采样种子（部分端点 temperature=0 + seed 时可复现）。
   const temperature = Number(process.env.PONOS_TEMPERATURE ?? 0)
   const seedEnv = process.env.PONOS_SEED
+  // 输出预算守卫（Task 6 / spec §3.6 L2）：思考型模型在小预算下会把预算吃光 ⇒ 正文为空。
+  // 与档位正交（不因"是否关思考"而变，否则改档位会顺带改请求体，见 guardOutputBudget 注释）。
+  const budget = guardOutputBudget({ maxTokens })
+  if (budget !== maxTokens) logBudgetFloorOnce(maxTokens, budget)
   // 思考深度：reasoningEffort（low/high/max → reasoning_effort；off → thinking disabled；
   // 缺省 → 不注入，模型原生自适应）
+  const effort = effortParam(reasoningEffort, thinkingMode)
   const body = {
-    model,
-    max_tokens: maxTokens,
+    model: wireModel,
+    max_tokens: budget,
     ...(Number.isFinite(temperature) ? { temperature } : {}),
     ...(seedEnv ? { seed: Number(seedEnv) } : {}),
-    ...effortParam(reasoningEffort, thinkingMode),
+    ...effort,
     ...(system ? (useCache ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : { system }) : {}),
-    messages,
+    messages: prepareMessagesForAnthropicWire(messages, {
+      base,
+      thinkingDisabled: effort?.thinking?.type === 'disabled',
+    }),
     stream: true,
     ...(tools.length
       ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) }
       : {}),
   }
-  const maxReconnect = Math.max(0, Number(process.env.CLAUDE_CODE_STREAM_RECONNECTS ?? 3))
+  const maxReconnect = Math.max(0, Number(process.env.PONOS_STREAM_RECONNECTS ?? 3))
   // 已知取舍（审计 #9，2026-09-07 复核维持现状）：断流重连时若上一段文本已部分输出，
   // 重试可能重复半截文本。审计与产品取舍均判定"接受"——重试正确性优先于输出去重；
   // 若要改进（engine 层半截文本去重）需先做真实断流复现与评估，勿无评估直接改此处。
@@ -1374,7 +1881,7 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
   // 重复，接受）；工具副作用由 engine 防重放（Task 3）兜底。abort/非 transient 直接抛。
   for (let attempt = 0; ; attempt++) {
     try {
-      yield* protocolStream({ url: base + '/v1/messages', body, headers, signal })
+      yield* protocolStream({ url: anthropicStreamUrl(base), body, headers, signal })
       return
     } catch (err) {
       // R1-2：连接/首字节超时（TimeoutError）与流中断（StreamInterrupted）同为
@@ -1388,15 +1895,74 @@ async function* anthropicStream({ model, messages, system, tools, maxTokens, sig
       // 没开工具调用"这一事实（isCacheRejection 对任意 400 都成立，会把同一个 400
       // 原样重发一次）→ 先于两个降级兜底直接上抛。
       if (classifyApiError(err).kind === 'tools-unsupported') throw err
+      // ★ 上下文超窗同样必须**先于**缓存标记兜底上抛（2026-11-01）：`isCacheRejection` 对任意
+      //   400/422 都成立，于是超窗请求（正是"请求体最大"的那一类）去掉缓存标记后再发一次，
+      //   必然再 400 —— 每轮白付一次满额请求，且把真实原因掩盖在第二次失败里。
+      //   与上面 tools-unsupported 的纪律完全一致。
+      if (classifyApiError(err).kind === 'context-window') throw err
       if (useCache && isCacheRejection(err)) {
         // 缓存标记被拒：去掉后重发一次（body 恢复纯字符串 system）
-        yield* protocolStream({ url: base + '/v1/messages', body: { ...body, ...(system ? { system } : {}) }, headers, signal })
+        yield* protocolStream({ url: anthropicStreamUrl(base), body: { ...body, ...(system ? { system } : {}) }, headers, signal })
         return
       }
       if (reasoningEffort && isEffortRejection(err)) {
         // 端点不支持思考深度字段：去掉后重发一次（退回模型默认思考深度）
         const { reasoning_effort, thinking, ...rest } = body
-        yield* protocolStream({ url: base + '/v1/messages', body: rest, headers, signal })
+        yield* protocolStream({ url: anthropicStreamUrl(base), body: rest, headers, signal })
+        return
+      }
+      throw err
+    }
+  }
+}
+
+// OpenAI Chat Completions 流（2026-09-23 协议兼容）。与 anthropicStream 的分工：
+//   · 骨架**刻意保持同构**（重连次数、指数退避、tools-unsupported 先抛、effort 拒绝降级），
+//     便于两侧行为对齐、审计时逐条对照；
+//   · 差异**全部下沉**到 wire/openai.mjs（URL、鉴权头、请求编码、解析器）——本函数不判字段形态。
+async function* openaiStream({ model, messages, system, tools, maxTokens, signal, reasoningEffort = null, thinkingMode = null }) {
+  const p = getProvider()
+  // 协议相关模型名（Task 1）：与 anthropicStream 同一处逻辑，未配置时逐字不变
+  const wireModel = pickModelName({ model, format: 'openai', modelByFormat: p.modelByFormat })
+  const base = p.baseUrl
+  if (!base || !p.authToken) throw new Error('内核：PONOS_BASE_URL / PONOS_AUTH_TOKEN 未配置')
+  // 鉴权固定 Bearer（OpenAI 生态约定），不看 provider.authScheme
+  const headers = openaiHeaders(p)
+  const url = openaiStreamUrl(base)
+  const temperature = Number(process.env.PONOS_TEMPERATURE ?? 0)
+  const seedEnv = process.env.PONOS_SEED
+  // 输出预算守卫（Task 6）：与 anthropicStream **同一处逻辑**（只抬不降，未指定不动，与档位正交）
+  const budget = guardOutputBudget({ maxTokens })
+  if (budget !== maxTokens) logBudgetFloorOnce(maxTokens, budget)
+  const body = encodeOpenAIRequest({
+    model: wireModel,
+    messages,
+    system,
+    tools,
+    maxTokens: budget,
+    reasoningEffort,
+    thinkingMode,
+    temperature: Number.isFinite(temperature) ? temperature : null,
+    seed: seedEnv || null,
+  })
+  const maxReconnect = Math.max(0, Number(process.env.PONOS_STREAM_RECONNECTS ?? 3))
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // ★ 每次调用都传**新解析器实例**：重连若复用旧实例，上一段的文本缓冲与工具槽会串进下一段
+      yield* protocolStream({ url, body, headers, signal, parser: createOpenAIParser() })
+      return
+    } catch (err) {
+      const retryable = (err?.name === 'StreamInterrupted' || err?.name === 'TimeoutError') && !err?.zeroEvents
+      if (retryable && !signal?.aborted && attempt < maxReconnect) {
+        await sleepAbortable(1000 * Math.pow(2, attempt), signal)
+        continue
+      }
+      // 与 anthropicStream 同序：工具能力未开启是终局配置错误，先于降级兜底上抛
+      if (classifyApiError(err).kind === 'tools-unsupported') throw err
+      if (reasoningEffort && isEffortRejection(err)) {
+        // 端点不支持思考深度字段：去掉后重发一次（退回模型默认思考深度）
+        const { reasoning_effort, thinking, ...rest } = body
+        yield* protocolStream({ url, body: rest, headers, signal, parser: createOpenAIParser() })
         return
       }
       throw err
@@ -1443,24 +2009,140 @@ export function classifyApiError(err) {
   // vLLM/OpenAI 等非 Anthropic 端点：400 + "maximum context length is N tokens"
   // （prompt+max_tokens 超过 max_model_len）同样判上下文超限，engine 走压缩自愈
   if (status === 400 && /maximum context length is \d+\s*tokens?/i.test(msg)) return { kind: 'context-window', retryable: false }
-  // 413 Payload Too Large：网关/代理层可能以 413 拒绝超长请求（vLLM 原生常为 400，
-  // 经代理/网关后状态码可能变为 413）。消息含上下文超限语义 → 走压缩兜底；否则按
-  // 负载层瞬时失败保守可重试（不直接杀掉整轮工具执行）。
-  if (status === 413) {
-    return /maximum context length|context window|prompt is too long|too many tokens/i.test(msg)
-      ? { kind: 'context-window', retryable: false }
-      : { kind: 'transient', retryable: true }
-  }
+  // 413 Payload Too Large：网关/代理层以 413 拒绝超长请求（vLLM 原生常为 400，经代理/网关后可能变 413）。
+  //
+  // ★★★ 2026-09-29 修（实测的**死循环**事故）：原先"消息不含上下文超限关键词 ⇒ 归为
+  //   `transient`（保守可重试）"。但 413 的语义**无歧义**：负载超过服务端接受上限 ——
+  //   **重试同一个 payload 永远不可能成功**。实测现场：某会话 2500+ 消息、请求体 ~1.7MB，
+  //   网关回 413（nginx 风格 "Request Entity Too Large"，不含那些关键词）⇒ 被判 transient
+  //   ⇒ 反复重试同一超大请求 ⇒ **61 轮 compact+api 死循环**（每轮 1.7MB，且消息数还在涨），
+  //   而内核**本已具备**的 context-window 自愈（压缩腾空间/采纳真实窗口/收窄输出预算）
+  //   **完全没被触发**（因为它只在 kind==='context-window' 时进入）。⇒ 修法：413 一律归
+  //   `context-window`，文案关键词不再作为分类前提（仅保留它做"进一步确认"的语义）。
+  //   这样"payload 过大"必然走自愈；自愈若仍进展不了，由既有熔断/进展判据收口，不再空转。
+  if (status === 413) return { kind: 'context-window', retryable: false }
   if (status === 401 || status === 403) return { kind: 'auth', retryable: false }
   if (status === 429 || /rate.?limit|too many requests/i.test(msg)) return { kind: 'rate-limit', retryable: true }
   if (/quota|billing|insufficient/i.test(msg)) return { kind: 'quota', retryable: false }
   if (/stream idle timeout/i.test(msg)) return { kind: 'transient', retryable: true }
   if (status >= 500 || /ECONN|ENOTFOUND|EPIPE|ETIMEDOUT|fetch failed|network|socket/i.test(msg)) return { kind: 'transient', retryable: true }
+  // 空回复两类（Task 6 / spec §3.6）：它们是**流已正常收尾**才成立的事实，错误对象由
+  // emptyCompletionError 携带 kind（流内没有错误可分类）。此处原样透传 ⇒ 任何按
+  // classifyApiError 分流的层（retryStream / cli / lane）都不会把它们当瞬时错误盲重试。
+  // 为什么不在此处按 message 猜：message 面向用户可读，判据不能依赖文案（会随文案改动漂移）。
+  if (err?.kind === 'empty-completion' || err?.kind === 'reasoning-budget-exhausted') return { kind: err.kind, retryable: false }
   return { kind: 'unknown', retryable: false }
 }
 
+// ── 空回复两类分类 + 输出预算守卫（Task 6 / spec §3.6 类型 Ⅱ）────────────────────
+//
+// 实测依据（spec §1.3，2026-08-20 冒烟 + 2026-09-23 复测）：`max_tokens=512` 时思考内容会把
+// 预算吃光 ⇒ `finish_reason: length`、`content` 空（铁证：`usage.completion` 恰好等于
+// `max_tokens`）；4096 / 8192 均正常收尾 `stop`。⇒ 两类空回复必须分开：类型 Ⅰ「适配器缺陷」
+// 靠正确实现解析器消除（最小闭环已完成）；类型 Ⅱ「预算被思考吃光」靠本节的守卫 + 可诊断错误消除。
+//
+// ★ `max_tokens` 是**上限而非目标**：抬升上限不增加常规成本（输出长度由内容决定），
+//   故守卫只抬不降是安全的。它与 engine 既有的 OUTPUT_TIERS 升档**互补而非重复**：
+//   升档发生在"已经空/截断一次之后"的补救，守卫是"别让第一发就空"。
+export const OUTPUT_BUDGET_FLOOR = 4096
+
+/**
+ * 输出预算守卫：低于地板值抬到地板，其余原样（只抬不降）。
+ * @param {{ maxTokens?: number, profile?: string }} args
+ * @returns {number|undefined} 未指定预算（undefined/非数值）时原样返回——不擅自替调用方决定
+ *
+ * ★ 为什么**不区分**是否关思考（2026-09-23 实测修正）：曾按"关思考时该故障形态不存在"
+ *   给关思考的调用豁免，结果把"档位旋钮"的影响从两个字段扩到三个 —— `max_tokens` 随档位
+ *   变化，直接打红 `kernel-tests/effort-wire.test.mjs` 的档位不变量（"旋钮之外请求体不变：
+ *   缓存前缀不被搅动"）。地板必须**与档位正交**：同一调用方在任何档位下取到同一预算，
+ *   否则"改档位"就顺手改了请求体，缓存前缀判据与审计口径都跟着漂。
+ */
+export function guardOutputBudget({ maxTokens, profile } = {}) {
+  if (!Number.isFinite(maxTokens)) return maxTokens
+  if (maxTokens >= OUTPUT_BUDGET_FLOOR) return maxTokens
+  return OUTPUT_BUDGET_FLOOR
+}
+
+// 预算抬升诊断（每进程每对取值只说一次，防请求密集时刷屏——与 effortDroppedNotice 同口径）。
+// 必须落诊断：用户看到"我明明配了 512，请求却发 4096"而没有任何解释时，只会怀疑内核乱改配置。
+let budgetFloorDiagKey = null
+function logBudgetFloorOnce(from, to) {
+  const key = `${from}->${to}`
+  if (budgetFloorDiagKey === key) return
+  budgetFloorDiagKey = key
+  try {
+    console.error(`[api] 输出预算已按地板抬升：max_tokens ${from} → ${to}`
+      + `（${from} 下思考型模型会把预算吃光、正文为空；max_tokens 是上限而非目标，抬升不增加常规成本。）`)
+  } catch { /* 日志失败不影响请求 */ }
+}
+
+/**
+ * 空回复分类（两类必须分开，spec §3.6）。返回 null 表示有产出、无需分类。
+ *   · reasoning-budget-exhausted：`stop_reason` 为 max_tokens/length **且有思考内容**
+ *     ⇒ 预算被思考吃光，引导用户提高输出预算或关思考。
+ *   · empty-completion：其余"content 空 + tool_use 空"⇒ HTTP 200 且流正常收尾却零产出，
+ *     属"假成功"，必须报错而非静默。
+ * @param {{ stopReason?: string|null, textLen?: number, toolCount?: number, thinkingLen?: number }} args
+ *   textLen 请传**已 trim 的长度**（纯空白的"正文"不算产出，否则守卫会被空白绕过）。
+ */
+export function classifyEmptyCompletion({ stopReason, textLen = 0, toolCount = 0, thinkingLen = 0 } = {}) {
+  if (textLen > 0 || toolCount > 0) return null
+  if (stopReason === 'max_tokens' && thinkingLen > 0) {
+    return {
+      kind: 'reasoning-budget-exhausted',
+      retryable: false,
+      hint: '模型的思考内容占满了输出预算，正文被截断。请提高该 provider 的输出上限（建议 ≥4096），或为思考型模型关闭思考后重试。',
+    }
+  }
+  return {
+    kind: 'empty-completion',
+    retryable: false,
+    hint: '端点返回成功但没有任何内容与工具调用。请确认该模型/协议组合可用，或改用该端点的另一协议入口。',
+  }
+}
+
+/**
+ * 第三态的处置决策（纯函数，spec §3.6 L3）：
+ *   · `switch-format`：provider 配了**与当前不同**的 `fallbackApiFormat` 且本回合还没降级过
+ *     ⇒ 换协议重发一次；
+ *   · `fail`：其余情形 ⇒ 由调用方抛 emptyCompletionError（带 kind/hint）。
+ * `fallbackProviderId` 只作为信息带出（`providerSwitchConfigured`）：内核只有**单个** active
+ * provider 注册表，热切换 provider 属 bridge 的 `switch_provider` 流程（含上下文窗口重算），
+ * 内核在本回合内擅自换 provider 会留下"env 指旧、注册表指新"的不一致 ⇒ 不做，写进错误引导。
+ *
+ * ⚠️ 形参 JSDoc 为必需（S2.1）：`classified` 无默认值 ⇒ 缺席于推断形参类型（解构处 TS2339）。
+ * @param {{
+ *   classified?: object|null, currentFormat?: string, fallbackApiFormat?: string|null,
+ *   fallbackProviderId?: string|null, downgraded?: boolean,
+ * }} [opts]
+ */
+export function planEmptyCompletionRecovery({ classified, currentFormat = 'auto', fallbackApiFormat = null, fallbackProviderId = null, downgraded = false } = {}) {
+  if (!classified) return { action: 'none' }
+  const to = normalizeApiFormat(fallbackApiFormat) // 非法/未配置 → 'auto'
+  if (!downgraded && to !== 'auto' && to !== currentFormat) return { action: 'switch-format', to }
+  return { action: 'fail', providerSwitchConfigured: !!fallbackProviderId }
+}
+
+/** 无产出（类型 Ⅰ/Ⅱ）的**可诊断**错误：带 `kind` 与 `hint`，上层可分级引导而非字符串匹配。
+ * ⚠️ 形参 JSDoc 为必需（S2.1）：`classified` 无默认值 ⇒ 缺席于推断形参类型（解构处 TS2339）；
+ *   其形状取自 `classifyEmptyCompletion` 的返回（kind/hint 两键）。
+ * @param {{ classified?: { kind?: string, hint?: string }|null, fallbackProviderId?: string|null }} [opts]
+ */
+export function emptyCompletionError({ classified, fallbackProviderId = null } = {}) {
+  const kind = classified?.kind || 'empty-completion'
+  const hint = classified?.hint || ''
+  const tail = fallbackProviderId
+    ? `（已配置备用 provider「${fallbackProviderId}」，但内核本回合无法热切换 provider：请在应用内切换该 provider 后重发一轮。）`
+    : ''
+  /** @type {ApiError} */ const err = new Error(`端点未产出任何正文（${kind}）：${hint}${tail}`)
+  err.kind = kind
+  err.hint = hint
+  if (fallbackProviderId) err.fallbackProviderId = fallbackProviderId
+  return err
+}
+
 // 单次读操作空闲看门狗（P1-6）：reader.read() 长时间无数据判超时。
-// 参考 deepseek-harness 的流式空闲看门狗（300s），防 fetch 永不 settle。
+// 流式空闲看门狗（300s），防 fetch 永不 settle。
 function withIdleTimeout(promise, ms) {
   if (!ms || ms <= 0) return promise
   return new Promise((resolve, reject) => {
@@ -1475,14 +2157,76 @@ function withIdleTimeout(promise, ms) {
   })
 }
 
-// 消息流入口：mock / 真实 Anthropic 协议分流。tools = 中立 [{name, description, input_schema}]
-export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null, thinkingMode = null }) {
+// 【2026-09-18 P1-9】请求面剔除本地记账字段 `usage` / `model`。
+// 为什么必须剔：
+//   ① 它们是**本地记账**字段（token 用量、模型名），对模型没有任何语义，却白付每轮
+//      重传的 prefill（长会话里几乎每条 assistant 都带，实测约 150–250B/条）；
+//   ② 更关键的是 engine 在**轮末给"已发出过"的 assistant 消息补 usage**
+//      （engine.mjs 的 `session.setEntryUsage(lastAssistantEntry, usage)`），使"上一轮请求"
+//      与"本轮请求"的公共前缀在**最末一条 assistant** 处断掉；剔除后公共前缀可一直延伸到
+//      该条消息本身，命中窗口更宽（前缀缓存逐字节匹配，任何一个字段变化都截断其后全部）。
+// 实现约束（**勿**改成在 `deriveMessages()` 里拷贝！）：`context.mjs` 的估算缓存以**消息对象
+//   身份**为 WeakMap 键，且 `session.deriveMessages()` 缓存的是 `entry.message` 本身、
+//   compact 的 covered→seq 反查也依赖同一 surface 代的对象身份。故此处**只对带这两键的消息**
+//   做浅拷贝，其余**原样返回同一引用**——与 streamMessages 里既有的 `filter` 新建数组、保留
+//   元素引用是同一身份契约，不会击穿任何缓存。
+// 存储侧**照旧保留** `usage` / `model`（`--usage` 只读聚合 `readonly.mjs` 直接自读 transcript
+//   文件、`context.predictTurns` 的旧数据回退路径都依赖它们），此处仅控制"不进模型输入"。
+export function stripAccountingFields(list) {
+  return list.map((m) => {
+    if (!m || (m.usage === undefined && m.model === undefined)) return m
+    const keep = { ...m }
+    delete keep.usage
+    delete keep.model
+    return keep
+  })
+}
+
+// 消息流入口：mock / 真实协议分流。tools = 中立 [{name, description, input_schema}]
+// 协议分派（2026-09-23，**唯一决策点**）：Anthropic Messages 与 OpenAI Chat Completions 二选一。
+// 判定依据与优先级见 kernel/wire/url.mjs#resolveApiFormat（显式字段 → env PONOS_API_FORMAT →
+// 基址尾缀 /anthropic → 本地画像 → 兜底 anthropic 不猜）。
+// 调用方（engine / compact / lane / workflow / judgeUntil）零改动：它们只认本函数与
+// "内部 Anthropic 形状"，线协议差异全部在 kernel/wire/ 内消化。
+// auto 模式的生效协议记忆：同一进程内按 baseUrl 去重，避免每次请求都多付一次 404 往返。
+// 只在"实测得出"时写入（先 anthropic 成功 或 404/405 回退 openai 成功），**不做任何地址推断**。
+const autoFormatCache = new Map()
+function rememberAutoFormat(baseUrl, format) {
+  if (!baseUrl) return
+  if (autoFormatCache.size > 50) autoFormatCache.clear() // 防无界增长（baseUrl 频繁变更的场景）
+  autoFormatCache.set(baseUrl, format)
+}
+/** 测试专用：清空 auto 记忆（避免用例间串味）。生产代码勿调用。 */
+export function resetAutoFormatCacheForTest() { autoFormatCache.clear() }
+
+export async function* streamMessages({ model, messages, maxTokens, signal, tools = [], reasoningEffort = null, thinkingMode = null, apiFormat = null }) {
   const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n')
-  const rest = messages.filter((m) => m.role !== 'system')
+  const rest = stripAccountingFields(messages.filter((m) => m.role !== 'system'))
   if (process.env.PONOS_MOCK_API === '1') {
     yield* mockStream({ messages, signal })
     return
   }
-  if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 ANTHROPIC_BASE_URL）')
-  yield* anthropicStream({ model, messages: rest, system, tools, maxTokens, signal, reasoningEffort, thinkingMode })
+  if (!detectProtocol()) throw new Error('内核：未检测到可用协议（需 PONOS_BASE_URL）')
+  const baseUrl = getProvider().baseUrl
+  // apiFormat：**本回合内的协议覆盖**（Task 6 空回复降级：换备用协议重发一次）。缺省 null 时
+  // 与既有行为逐字相同（resolveApiFormat 收到 'auto' ⇒ 走既有判定链）——调用方零改动。
+  const format = resolveApiFormat({ format: apiFormat || 'auto', baseUrl, env: process.env })
+  const args = { model, messages: rest, system, tools, maxTokens, signal, reasoningEffort, thinkingMode }
+  if (format === 'openai') { yield* openaiStream(args); return }
+  if (format === 'anthropic') { yield* anthropicStream(args); return }
+  // ── auto：先按既有行为走 anthropic（**零回归**），仅在"未产出任何 chunk + 协议级拒绝
+  //    （404/405）"时回退 openai 一次并记忆。produced 守卫保证：只要流已开始吐内容就绝不
+  //    重发（避免半截文本重复，与 anthropicStream 断流重连同一取舍纪律）。
+  if (autoFormatCache.get(baseUrl) === 'openai') { yield* openaiStream(args); return }
+  let produced = false
+  try {
+    for await (const chunk of anthropicStream(args)) { produced = true; yield chunk }
+    rememberAutoFormat(baseUrl, 'anthropic')
+    return
+  } catch (err) {
+    if (produced || !isProtocolRejection(err)) throw err
+    rememberAutoFormat(baseUrl, 'openai')
+    process.stderr.write(`[api] 协议回退：${baseUrl} 的 /v1/messages 返回 ${err?.status}，改用 OpenAI 协议重发一次\n`)
+    yield* openaiStream(args)
+  }
 }

@@ -5,16 +5,38 @@
 // 纯函数在 shared/knowledge-core.mjs（repo 根 shared/ 经一级 ../ 逃逸共享）。
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, statSync,
-  rmSync, cpSync, realpathSync,
+  rmSync, realpathSync,
 } from 'node:fs'
-import { join, relative, sep, basename, dirname, extname } from 'node:path'
+// ★ 2026-09-29（批次 4.2）：`cpSync` / `dirname` / `extname` 随回收站簇搬去
+//   `kernel/knowledge-trash.mjs`（它们只被搬运/占用统计用到）⇒ 从本模块的导入清单移除，
+//   避免留"看起来在用其实没人用"的名字（实测：搬走后三者在 >20 行范围内使用次数均为 0）。
+import { join, relative, sep, basename, resolve as resolvePath } from 'node:path'
 // 原子写 / 临时文件判定（2026-09-14 批次 4）：`walkMd` 必须跳过 `.yfw-tmp-*.md`。
 // 临时文件的名字**以目标名结尾、同样是 .md**，不跳过就会被当成一篇新文档收进索引 ——
 // 于是"保存一次文档"在库里多出一篇同名文档，而它随时会被 rename 走或删除。
 import { isAtomicTmpName } from '../shared/atomic-write.mjs'
+import { knowledgeRoot } from './knowledge-paths.mjs'
+// ★ 2026-10-18 EVO-06 ②a：检索期标签别名展开（只读注册表；注册表是**本机单文件**
+//   `<configDir>/tags/registry.json`，读失败即降级为"不展开"，不影响检索可用性）
+import { loadTagRegistry, makeTagResolver } from './tag-store.mjs'
+// 回收站簇（2026-09-29 批次 4.2 从本文件拆出；文件头有"为什么拆这里"与三条不变量）
+import {
+  TRASH_DIR_NAME, isTrashId, newTrashId,
+  realpathInside, normalizeMdRel, pathBytes, listRelFiles, movePath, copyPath,
+  readTrashIndex, writeTrashIndex, freeRel,
+} from './knowledge-trash.mjs'
 // 检索语法层（2026-09-14 对标 Obsidian 批次 3）：解析 `tag:` / `path:` / `"短语"` / `A OR B` /
 // `-x` / `/正则/`，内核据此"先过滤、后打分"。纯函数无 IO，前端另有一份同口径手写实现。
 import { parseSearchQuery, matchDocQuery, matchBlockQuery, matchTextParts } from '../shared/knowledge-query.mjs'
+// 索引存储后端（2026-09-29）：SQLite 侧的**取数**实现（读路径 T5 / 写路径 T6 / 迁移 T4）。
+// 依赖方向：knowledge（内核）→ backend-sqlite（后端）—— **单向**。
+// 2026-09-30 解环：backend-sqlite 原先进口本模块的 `createKnowledgeStore` 作迁移源兜底，
+// 与本模块形成静态环（被 arch-graph-cycles 判为腐化）。现改为：**迁移源必须由调用方传入
+// store**（`migrateToSqlite({ configDir, store })`），路径助手下沉到 knowledge-paths.mjs。
+import {
+  backendOf, dbPathOf, openIndex, isHealthy, readMeta, queryPostings,
+  fetchBlocks, loadDocs, loadFiles, loadIdf, loadInverted, migrateToSqlite, upsertDocInTx,
+} from './knowledge-backend-sqlite.mjs'
 import {
   INDEX_VERSION, builtinSpaceSpecs, parseFrontmatter, splitBlocks, extractLinks,
   toDocId, hashLine,
@@ -31,36 +53,37 @@ import {
 } from '../shared/knowledge-core.mjs'
 
 /** 空间根：<configDir>/knowledge（configDir 由调用方给，本模块不自解析 home） */
-export function knowledgeRoot(configDir) {
-  return join(configDir || '', 'knowledge')
-}
+// `knowledgeRoot` 已下沉到零依赖模块（见该文件头注释：解 backend-sqlite ⇄ knowledge 的静态环）。
+// 这里 **re-export** 保持既有消费者（knowledge-cli / knowledge-inject / server 等）零改动。
+export { knowledgeRoot }
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.index', '.obsidian'])
 
-/**
- * 单个空间的**索引文件数上限**（2026-09-14 批次 4 提为常量）。
- *
- * 上限本身是必要的防护（一次误指向家目录就会试图索引上百万个文件），但**静默**截断不行：
- * 用户看到"索引成功"，而超限的文档搜不到、图谱里没有、统计数字也不含 —— 没有任何迹象说明原因。
- * 现在截断会被写进 manifest 并在 `stats()` 里报出来，GUI 据此提示（见 KnowledgePanel 的上限提示）。
- */
-const FILE_LIMIT_PER_SPACE = 5000
+// ★ 2026-09-30 用户裁决：**知识库不做上限约束**（原 `FILE_LIMIT_PER_SPACE = 5000` 已删除）。
+//   原话：「知识库理论上不能做上限约束，需要的是解决如何在大数据量的前提下，仍能正常解析和读取，
+//   分块是否合理，标签是否冗余，或者其他相关优化」。
+//   故索引侧不再有任何"条数到了就停手"的路径：扫描多少收录多少（规模问题靠"解析/存储/检索"
+//   的设计解决，不靠丢数据解决）。留痕通道（`stats.filesTruncated`）保留但**无上限 ⇒ 恒不触发**：
+//   它现在的职责是"一旦将来有人重新引入限流，必须出声"（且 GUI 的字段形状不变）。
 
 /**
  * 递归收集 md。不跟符号链接（穿越防护第一道），跳过依赖/隐藏目录。
  *
- * `stats` 出参（2026-09-14 批次 4）：**截断必须出声**。旧实现在 `out.length >= maxFiles` 时
- * 静默停手 —— 用户看着一个"索引成功"的界面，而第 5001 篇之后的文档**根本不存在**：
- * 搜不到、图谱里没有、统计数字也不含。没有任何迹象说明原因，用户只会怀疑"搜索坏了"。
- * 这里把 `truncated`/`limit`/`count` 写回调用方给的 `stats` 对象（不改返回值形状 —— 既有调用方
- * 与测试都按数组用，改形状会把无关代码卷进 diff），再由调用方写进 manifest 与 stats 输出。
+ * **缺省无上限**（`maxFiles = Infinity`，2026-09-30 裁决；见上方常量处的说明）：调用方不显式
+ * 传 `maxFiles` 时收录**全部** .md —— 大库的可用性由"按需取数/分块合理/标签精简"解决，
+ * 不靠丢数据解决。
+ *
+ * `maxFiles`/`stats` 出参（2026-09-14 批次 4）**仍然保留**：它服务的是"调用方自己设了限流"
+ * 这一情形 —— 那时截断必须**出声**（`stats.truncated`/`limit`/`count` 写回调用方对象），
+ * 绝不能静默停手（用户看着"索引成功"的界面，而超限的文档搜不到、图谱里没有、统计也不含）。
+ * 内核自身（scanAll / indexStale）**不传** `maxFiles` ⇒ 内核路径下恒无截断。
  *
  * **必须跳过原子写的临时文件**：`shared/atomic-write.mjs` 的临时名是
  * `.yfw-tmp-<pid>-<rand>-<原名>.md` —— 结尾仍是 `.md`，会被这里的 `/\.md$/i` 收进索引，
  * 于是"保存一次文档"就会在库里多出一篇同名文档（而它随时会被 rename 走或删掉）。
  * 进程被强杀留下的残留也会因此长期污染索引。
  */
-export function walkMd(root, { maxFiles = 5000, stats = null } = {}) {
+export function walkMd(root, { maxFiles = Infinity, stats = null } = {}) {
   const out = []
   const stack = [root]
   /**
@@ -105,171 +128,41 @@ function readJsonFile(fp) {
 }
 
 // ── 回收站（软删除，2026-09-14）──────────────────────────────────────────────
-// 设计见 .yfw-spec/knowledge-trash/spec.md。三条不变量，改本段前先读它们：
-//   ① 除 purge 外**不做任何物理删除**（`movePath` 的跨盘兜底 rm 只删"已经复制成功"的源）；
-//   ② 回收站放 `<knowledge>/.trash`（不在各空间内）：`walkMd` 跳过 `.` 开头的目录 ⇒
-//      回收站天然不进索引（索引层零改动）；且删整库时不会把回收站一起搬走；
-//   ③ 删除权限判定**独立于 `writable`**：内置经验空间的 `writable === true`（记忆需要能写），
-//      照它放行会直接删掉用户的 `~/.yfw/memory/personal`。
-const TRASH_DIR_NAME = '.trash'
-/** `YYYYMMDD-HHmm-<4位小写字母数字>`。purge 是唯一物理删除路径，形状校验是它的第一道闸。 */
-const TRASH_ID_RE = /^[0-9]{8}-[0-9]{4}-[0-9a-z]{4}$/
+// ★ 本段实现已于 2026-09-29（批次 4.2）迁至 `kernel/knowledge-trash.mjs`。
+//   为什么拆这里：本文件 2855 行里，`createKnowledgeStore` 的 2100 余行**共享大量闭包状态**
+//   （属 P2 判据①下的高风险区，不动）；而回收站簇（id 形状与生成 / 路径越界防护 / 搬运 /
+//   占用统计 / 台账读写 / 还原让位）**全是只吃入参的纯函数**，不依赖任何闭包状态 ⇒ 低风险切面。
+//   ★ `trashRoot` 仍留在本处：它依赖 `knowledgeRoot`（本文件导出），移走会形成循环导入。
+//   ★ 三条设计不变量（除 purge 外不物理删除 / 回收站放 .trash 天然不进索引 / 删除权限独立于
+//     `writable`）随实现一起搬到了 knowledge-trash.mjs 的文件头 —— **改回收站前先读它们**。
 
 /** 回收站根：`<configDir>/knowledge/.trash`。 */
 export function trashRoot(configDir) {
   return join(knowledgeRoot(configDir), TRASH_DIR_NAME)
 }
 
-/** trashId 形状校验。`../`、绝对路径、盘符一律不匹配 ⇒ purge 拿不到回收站外的路径。 */
-export function isTrashId(v) {
-  return TRASH_ID_RE.test(String(v ?? '').trim())
-}
-
-/** 生成 trashId（时间可读 + 防同秒冲突）。`taken` 由调用方给（查台账 + 查目录）。 */
-export function newTrashId(taken = () => false) {
-  const d = new Date()
-  const p = (n) => String(n).padStart(2, '0')
-  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
-  for (let i = 0; i < 200; i++) {
-    const rand = Math.random().toString(36).slice(2).padEnd(4, '0').slice(0, 4)
-    const id = `${stamp}-${rand}`
-    if (isTrashId(id) && !taken(id)) return id
-  }
-  // 不返回时间戳外的兜底值：宁可报错，也不覆盖已有回收站条目（那才是真的丢数据）
-  throw new Error('trash: 无法生成唯一 trashId（同分钟内 200 次随机全部撞车）')
-}
-
-/** 目标路径是否真的落在 root 内（软链接解析后判定）。`..` 已在路径规范化阶段拒掉，这是第二道。 */
-function realpathInside(root, abs) {
-  let rootReal
-  let absReal
-  try { rootReal = realpathSync(root) } catch { return false }
-  try { absReal = realpathSync(abs) } catch { return false }
-  return absReal === rootReal || absReal.startsWith(rootReal.endsWith(sep) ? rootReal : rootReal + sep)
-}
-
-/**
- * 相对 .md 路径规范化（删除/还原专用，与 `listTree` 的读侧防护同口径）：
- * 拒绝对路径/盘符/`..`/空段，且必须以 `.md` 结尾 —— 允许删非 md 文件等于把这里变成通用删文件口。
- */
-function normalizeMdRel(rel) {
-  const s = String(rel ?? '').replace(/\\/g, '/').trim()
-  if (!s) return null
-  if (s.startsWith('/') || /^[a-zA-Z]:/.test(s)) return null
-  const parts = s.split('/').filter((p) => p && p !== '.')
-  if (!parts.length || parts.some((p) => p === '..')) return null
-  if (!/\.md$/i.test(parts[parts.length - 1])) return null
-  return parts.join('/')
-}
-
-/** 路径占用统计（删前算，删后就没有了）。文件返回自身大小；目录递归求和。 */
-function pathBytes(abs) {
-  let st
-  try { st = statSync(abs) } catch { return 0 }
-  if (st.isFile()) return st.size
-  let bytes = 0
-  const stack = [abs]
-  while (stack.length) {
-    const dir = stack.pop()
-    let entries = []
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
-    for (const e of entries) {
-      if (e.isSymbolicLink()) continue
-      const p = join(dir, e.name)
-      if (e.isDirectory()) { stack.push(p); continue }
-      if (!e.isFile()) continue
-      try { bytes += statSync(p).size } catch { /* 统计失败不影响删除，只是数字略小 */ }
-    }
-  }
-  return bytes
-}
-
-/** 目录下的文件相对路径清单（只用于报告"搬走了什么"，不参与删除决策）。 */
-function listRelFiles(abs) {
-  const out = []
-  let st
-  try { st = statSync(abs) } catch { return out }
-  if (st.isFile()) return [basename(abs)]
-  const stack = [abs]
-  while (stack.length) {
-    const dir = stack.pop()
-    let entries = []
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
-    for (const e of entries) {
-      if (e.isSymbolicLink()) continue
-      const p = join(dir, e.name)
-      if (e.isDirectory()) { stack.push(p); continue }
-      if (e.isFile()) out.push(relative(abs, p).split(sep).join('/'))
-    }
-  }
-  return out
-}
-
-/** 先试 rename（同盘原子、最快），EXDEV（跨盘）才退化成"复制成功后再删源"。 */
-function movePath(from, to) {
-  mkdirSync(dirname(to), { recursive: true })
-  try {
-    renameSync(from, to)
-    return 'rename'
-  } catch (e) {
-    if (e?.code !== 'EXDEV') throw e
-  }
-  cpSync(from, to, { recursive: true })
-  rmSync(from, { recursive: true, force: true }) // 源已完整复制，这里删的是副本的源
-  return 'copy'
-}
-
-/**
- * 复制路径（2026-09-14 批次 4）。与 `movePath` 唯一的区别是**源保留**。
- * 搬走的场景要 30 秒内跨盘也能用（`cpSync` + `rmSync`），复制场景直接用 `cpSync` 即可 ——
- * 但都要先 `mkdirSync` 父目录，否则 `cpSync` 在父目录不存在时抛 ENOENT。
- */
-function copyPath(from, to) {
-  mkdirSync(dirname(to), { recursive: true })
-  cpSync(from, to, { recursive: true })
-  return 'copy'
-}
-
-/** 台账读写（原子替换：写 .tmp → rename，避免半截 JSON 让整个回收站不可读）。 */
-function readTrashIndex(trashDir) {
-  const raw = readJsonFile(join(trashDir, 'index.json'))
-  return { version: 1, items: Array.isArray(raw?.items) ? raw.items : [] }
-}
-
-function writeTrashIndex(trashDir, index) {
-  mkdirSync(trashDir, { recursive: true })
-  const fp = join(trashDir, 'index.json')
-  const tmp = `${fp}.tmp`
-  writeFileSync(tmp, JSON.stringify(index, null, 2), 'utf-8')
-  renameSync(tmp, fp)
-}
-
-/** 还原时的"同名让位"（与导入侧 `outRelFor` 同一约定：`a.md` → `a-2.md`）。 */
-function freeRel(root, rel) {
-  const parts = rel.split('/')
-  const file = parts.pop()
-  const dir = parts.join('/')
-  const ext = extname(file)
-  const stem = basename(file, ext)
-  // 让位名必须把**目录前缀带回去**（`sub/b.md` → `sub/b-2.md`）。只返回 `b-2.md` 会把文件
-  // 还原到空间根 —— 看起来"还原成功"，实际位置错了，且原目录下仍然缺这个文件。
-  const at = (name) => join(root, ...(dir ? `${dir}/${name}` : name).split('/'))
-  if (!existsSync(at(file))) return rel
-  for (let i = 2; i < 1000; i++) {
-    const cand = `${stem}-${i}${ext}`
-    if (!existsSync(at(cand))) return dir ? `${dir}/${cand}` : cand
-  }
-  return null
-}
+// 保持公开 API 不变：调用方（含 kernel-tests/knowledge-trash.test.mjs）继续从本模块导入这三个。
+export { isTrashId, newTrashId }
 
 /**
  * 空间发现。顺序 = 内置（目录存在才挂）→ 用户空间 → 知识包（只读）。
  * 目录缺失一律静默跳过——"没有"不是错误。
+ *
+ * @param {{ configDir?: string, root?: string | null, extraSpaceSpecs?: any[] }} args
+ *   `configDir` = 配置根（与 `root` 的差别：`root` 是**知识根**，缺省由 `configDir` 派生；
+ *   两者都可给时 `root` 优先）。★ 为什么必须显式登记 `configDir`：它在形参里**无默认值** ⇒
+ *   不登记就不在推断类型里，于是 kernel/cli.mjs（本函数的主要调用点）传 `configDir` 会被 tsc
+ *   判成"多余属性"（TS2353）。删掉本行 = cli 类型立刻变红。
+ *   `extraSpaceSpecs` 是**团队空间**的注入位（S3，见下方 `builtinSpaceSpecs` 的 why），
+ *   元素形状的真源在 kernel/team-sync.mjs 的 `teamSpaceSpecs()`（L72，无 `@returns` typedef ⇒ 这里
+ *   用 any[] 而非抄一份会漂移的副本；本模块只透传、不做二次定义）。
  */
-export function discoverSpaces({ configDir, root = null } = {}) {
+export function discoverSpaces({ configDir, root = null, extraSpaceSpecs = [] } = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const out = []
-  for (const s of builtinSpaceSpecs(configDir)) {
+  // S3：`extraSpaceSpecs` 让调用方把**团队空间**（`team-<teamId>`，指向团队源目录）挂进来。
+  // 缺省空数组 ⇒ 与改造前逐字一致（零回归）；团队空间同样"目录存在才挂"。
+  for (const s of builtinSpaceSpecs(configDir, { extra: extraSpaceSpecs })) {
     if (existsSync(s.root)) out.push(s)
   }
 
@@ -301,6 +194,91 @@ export function discoverSpaces({ configDir, root = null } = {}) {
     }
   }
   return out
+}
+
+/**
+ * 会话可关联的知识库数量上限（2026-09-15，待处理清单 P1「会话模式关联经验库之外的知识库」）。
+ *
+ * **why 是 8**：范围会同时进入「注入白名单」与「提示词清单」——两者都是**每次请求都要付**的成本
+ * （提示词里每多一个库名，就多一分与任务无关的噪声）。8 个已远超"人工挑选"的实际粒度（用户
+ * 真正常用的储备库是 1–3 个），再多的部分不是"能力"而是"上下文税"。
+ * 超限**不报错**（用户操作不该抛异常），但必须进 `dropped` 被看见（见返回结构）。
+ */
+export const MAX_ASSOC_SPACES = 8
+
+/**
+ * GUI「大库提示」阈值（2026-09-15）：关联时若某库文档数超过它，界面提示"注入受预算限制"。
+ *
+ * **why 是 1000**：注入层的抽调预算是 4096 字节（`knowledge-inject.mjs` DEFAULT_TOTAL_BUDGET），
+ * 单条命中按摘要十来行算，实际能装下的条目是**个位数**。1000 篇规模意味着"随手一搜就有几百条
+ * 候选"，用户此时需要知道的是"该按关键词按需检索，而不是指望它整库进上下文"。
+ * 数值本身不参与检索决策（纯提示），故不需要像关联上限那样严格论证——但也不能不设：
+ * 没有阈值就没有提示的触发点。
+ */
+export const LARGE_SPACE_DOCS = 1000
+
+/** 内置经验类空间的 source 集合：它们是"给执行任务用的"基础设施，恒在会话范围内（spec D4）。 */
+const BUILTIN_SCOPE_SOURCES = new Set(['experience', 'memory'])
+/**
+ * **可被关联**的空间 source 集合（2026-09-15）：与 GUI 的 `isAssociableSpace` 同义。
+ *
+ * 为什么要在这里也判一次：`unassociated` 会被渲染进提示词，让模型**请用户去关联**。
+ * 若把 GUI 根本给不出开关的空间（如尚未启用的 `skill-experience`）列进去，模型就会指一条
+ * 走不通的路——用户按提示去找开关，找不到，只能怀疑功能坏了。清单只列"指得到门"的空间。
+ */
+const ASSOCIABLE_SCOPE_SOURCES = new Set(['user', 'pack'])
+
+/**
+ * 解析**会话知识范围**（2026-09-15，spec §3.2）：本会话的 agent 可注入/可检索的空间白名单。
+ *
+ * 组成 = 内置经验类空间 ∪ 用户显式关联的空间。三条语义要点：
+ *   1. **经验库不可被移除**（D4）：它是执行任务的基础设施，"关掉经验库"只会让 agent 变笨而
+ *      用户不知道为什么。故 `builtin` 一律前置，`requested` 只能**追加**。
+ *   2. **不存在/不可读的 id 进 `missing`，超上限的进 `dropped`**（不报错、不静默）：关联是用户
+ *      在界面上点的，操作本身不该抛异常；但"点了没生效"必须可解释——两处出声让 GUI/日志能做
+ *      到"忽略了这个库，因为……"。
+ *   3. **纯读、无副作用**：只调 `discoverSpaces`（目录发现），不建索引、不写盘；cli 在会话启动
+ *      段就能廉价调用，工具层与注入层拿到的是**同一个**对象（双层同源，spec §2.2）。
+ *
+ * 与 `discoverSpaces` 的差别：那个回答"库里有哪些空间"，本函数回答"**本次会话**能用哪些"。
+ * 前者是事实，后者是授权——不要互相替代（GUI 的空间下拉必须看到全部，agent 只能看到授权集）。
+ *
+ * @returns {{
+ *   spaces: string[], builtin: string[], associated: string[], missing: string[],
+ *   dropped: string[], truncated: boolean, labels: Record<string,string>, unassociated: string[],
+ * }}
+ *   `labels` = id→显示名（提示词与 GUI 共用一份，避免两处各取一次名字而名字口径漂移）；
+ *   `unassociated` = 存在但**未**关联、**且可关联**（source ∈ {user,pack}，与 GUI 开关同判据）
+ *   的空间 id（提示词据此告诉模型"还有什么库可以请用户关联"——只列指得到门的，避免指路无门）。
+ *
+ * @param {{ configDir?: string, requested?: string[] | null, extraSpaceSpecs?: any[] }} args
+ *   `requested` 可空：GUI 传 undefined / 旧会话落盘 null 都当"没关联"（见体内 `Array.isArray` 归一）。
+ *   `extraSpaceSpecs` 同 `discoverSpaces`（团队空间注入位，元素真源在 kernel/team-sync.mjs 的 `teamSpaceSpecs()` L72）。
+ *   ★ 为什么必须显式登记 `configDir`：它在形参里**无默认值** ⇒ 不登记就不在推断类型里，
+ *   kernel/cli.mjs 的调用点会被 tsc 判成"多余属性"（TS2353）。删掉本行 = cli 类型立刻变红。
+ */
+export function resolveSessionKnowledgeScope({ configDir, requested = null, extraSpaceSpecs = [] } = {}) {
+  const all = discoverSpaces({ configDir, extraSpaceSpecs })
+  const builtin = all.filter((s) => BUILTIN_SCOPE_SOURCES.has(s.source)).map((s) => s.id)
+  const byId = new Map(all.map((s) => [s.id, s]))
+  // 归一：非数组/含空串一律当"没关联"（GUI 传来的可能是 undefined、旧会话可能是 null）。
+  const asked = (Array.isArray(requested) ? requested : [])
+    .map((s) => String(s ?? '').trim()).filter(Boolean)
+  // 去重保持**用户给定顺序**（顺序即优先级的天然表达：先关联的排在提示词前面），
+  // 在去重之后再判 missing/dropped，避免"同一个 id 写两遍"把配额吃掉两份。
+  const uniq = [...new Set(asked)]
+  const missing = uniq.filter((id) => !byId.has(id))
+  // 内置空间即使被显式列出也不算"关联"，否则它会在配额里占位（用户并不需要为经验库买单）。
+  const known = uniq.filter((id) => byId.has(id) && !builtin.includes(id))
+  const associated = known.slice(0, MAX_ASSOC_SPACES)
+  const dropped = known.slice(MAX_ASSOC_SPACES)
+  const spaces = [...builtin, ...associated]
+  const scopeSet = new Set(spaces)
+  return {
+    spaces, builtin, associated, missing, dropped, truncated: dropped.length > 0,
+    labels: Object.fromEntries(all.map((s) => [s.id, s.name || s.id])),
+    unassociated: all.filter((s) => !scopeSet.has(s.id) && ASSOCIABLE_SCOPE_SOURCES.has(s.source)).map((s) => s.id),
+  }
 }
 
 function collectTags(front, space, relPath, blocks) {
@@ -399,18 +377,14 @@ function linkRowsOf(raw, docId, blocks) {
 }
 
 // ── 索引（Task 6）─────────────────────────────────────────────────────────
-/**
- * 单文档最多索引的块数（护栏：防单文件把索引撑爆）。
- *
- * ⚠️ 数值来自真实库实测，不是随手取的。S6 合并历史经验库后 `experience/workflow.md`
- * 有 **239** 条条目，而原值 200 让 `slice(0, 200)` 把**尾部 ~48 条静默丢掉** ——
- * 那些条目仍在文件里（Read 看得见），却不在索引中：检索不到、没有关联边、图谱里不存在。
- * 这是最难排查的一类分裂（"文件有、知识库没有"）。实测：文件 302 条 / 索引 254 条。
- *
- * 故提到 2000（对当前单文件最大 239 留 ~8× 余量），并且**截断必须出声**（见 `capBlocks`）——
- * 护栏可以存在，但静默丢数据不行。
- */
-const MAX_BLOCKS_PER_DOC = 2000
+// ★ 2026-09-30 用户裁决：**单文档块数不再有上限**（原 `MAX_BLOCKS_PER_DOC = 2000` + `capBlocks`
+//   的尾部截断已删除）。原话：「知识库理论上不能做上限约束，需要的是解决如何在大数据量的前提下，
+//   仍能正常解析和读取，分块是否合理，标签是否冗余，或者其他相关优化」。
+//   为什么删而不是"把 2000 调大"：调大只是把同一个静默丢数据的机制推到更远处 —— 那正是本仓反复
+//   踩过的病灶（原值 200 时实测 workflow.md 文件 302 条 / 索引 254 条，"文件里有、知识库没有"）。
+//   大文档的正确解法是**分块合理 + 存储与检索按需取数**（索引存储升级的 T4–T6），不是丢弃尾部。
+//   留痕通道（`stats.blocksTruncated`）保留但**无上限 ⇒ 恒为零值**：GUI 字段形状不变，
+//   且一旦将来有人重新引入丢弃式限流，这个通道仍在（且那时必须出声）。
 const PRUNE_MIN_DOCS = 50      // 少于 50 篇不做高频剪枝（小库剪枝会误伤）
 const PRUNE_DF_RATIO = 0.5     // 出现在超半数文档里的 gram 近似停用词
 /** 检索耗时采样窗口（环形缓冲上限）：100 次足够看 P95，也不会无界增长 */
@@ -493,7 +467,7 @@ function indexTextOf(b) {
  * （没有 configDir），此时若去读相对路径的 config.json，会误取启动 cwd 里的文件；
  * 缺省一律 'on' —— 缺省值必须等于"新能力开启"（spec §10）。
  */
-function resolveRelateMode(configDir, explicit = null) {
+export function resolveRelateMode(configDir, explicit = null) {
   const norm = (v) => (String(v ?? '').trim().toLowerCase() === 'off' ? 'off' : 'on')
   if (explicit !== null && explicit !== undefined && String(explicit).trim() !== '') return norm(explicit)
   const env = process.env.PONOS_KNOWLEDGE_RELATE_MODE
@@ -507,16 +481,220 @@ function resolveRelateMode(configDir, explicit = null) {
   return 'on'
 }
 
-export function createKnowledgeStore({ configDir, root = null, relateMode = null } = {}) {
+/**
+ * `knowledgeScorer`：'bm25'（**缺省**）| 'legacy' | 'bm25f'。
+ *
+ * **它换掉的是什么**：只换**终评打分公式** —— `legacy` 用"索引期完全 L2 归一化的 cosine"
+ * （等价 BM25 里 `b=1` 的硬归一化），`bm25` 用 BM25 的"tf 饱和 + 部分长度归一化"
+ * （`k1=1.2 / b=0.75`）。索引格式、候选生成、融合权重、截断、关联**一律不变**。
+ * `bm25f` 在同一公式上再叠加**字段权重**（见 FIELD_WEIGHTS）。
+ *
+ * **为什么不改索引格式**：先把"公式"这一个变量单独测出来（P0 量尺的职责），
+ * 否则"索引换了 + 公式换了"两个变量一起动，量尺上的变化无法归因。
+ *
+ * **缺省为何已翻到 bm25**（2026-09-18 当日，经确认）：它在自有量尺上实测更优且耗时减半 ——
+ * 同语料 164 例：recall@5 0.738→0.866、top1 0.652→0.768、MRR 0.683→0.804、miss 43→22、
+ * P50 430→197ms。`legacy` 保留为可回退档（`knowledgeScorer: "legacy"`），不是死代码：
+ * 一旦 bm25 出现无法解释的退化，去掉配置即回到改造前行为。
+ * 注意 `legacy` 与 `bm25` 的**分数尺度不同**（0~1 融合分 vs 归一化后的 BM25），
+ * 任何"分数阈值"类的外部消费都可能需要各自标定 —— 这也是保留开关的原因之一。
+ */
+const SCORER_MODES = new Set(['legacy', 'bm25', 'bm25f'])
+
+function resolveScorerMode(configDir, explicit = null) {
+  const norm = (v) => {
+    const s = String(v ?? '').trim().toLowerCase()
+    return SCORER_MODES.has(s) ? s : null
+  }
+  const a = norm(explicit)
+  if (a) return a
+  const b = norm(process.env.PONOS_KNOWLEDGE_SCORER)
+  if (b) return b
+  if (configDir) {
+    try {
+      const cfg = JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf-8'))
+      const c = norm(cfg && cfg.knowledgeScorer)
+      if (c) return c
+    } catch { /* 无 config.json / 损坏 → 落到缺省（bm25），不让坏配置把检索打回旧公式 */ }
+  }
+  return 'bm25'
+}
+
+/**
+ * BM25 参数（P1）。**为什么全部走 env 而不是写死**：文档《2026-09-18-BM25 智能体检索评估
+ * 与升级方案》§3 明确判定"照搬别人的 k1/b 不适用"（那些值是在 5000 词网页文档上网格搜出来的），
+ * 参数必须在**本应用自有量尺**（scripts/eval-retrieval.mjs）上定 —— 留出 env 才能做网格搜，
+ * 搜完再把胜出值固化成缺省，而不是反过来先固化再解释。
+ *
+ * ## 标定结果（2026-09-18，`scripts/grid-bm25.mjs` 跑在本机 238 篇 / 6917 块语料上）
+ *
+ * | 配置 | autoRecall@5 | top1 | MRR |
+ * |---|---|---|---|
+ * | **k1=1.2 b=0.75**（当前缺省） | **0.817** | **0.767** | **0.787** |
+ * | k1=0.9 b=0.75 | 0.889* | 0.800* | 0.833* |
+ * | k1=1.2 b=0.5 | 0.867* | 0.733* | 0.786* |
+ * | k1=1.2 b=1.0 | 0.783 | 0.733 | 0.753 |
+ * | k1=10 b=1（来源材料的值） | 0.767 | 0.650 | 0.694 |
+ * | k1=25 b=1（来源材料的值） | 0.733 | 0.617 | 0.663 |
+ *
+ * （* 为 45 例小样本组，与 60 例组不同批，只能看趋势不能逐格比较。）
+ *
+ * 三条结论：
+ *  ① `b=0.75` 稳健最优 —— 两端都差（b=0.5 与 b=1.0 均低于它），说明"部分长度归一化"
+ *     在本库确实是关键（legacy 的完全归一化等价 b=1，正好落在较差的一侧）。
+ *  ② **照搬来源材料的 k1=10/25 会让 top1 掉 11–15 个点**（0.767 → 0.650/0.617），
+ *     趋势单调（k1 越大越差）—— 那是为 5000 词长网页文档调的，本库是短块，
+ *     高 k1 等于放弃 tf 饱和。**数字不可照搬，方向（BM25 本身）才是可迁移的。**
+ *  ③ `k1` 在 0.9–1.2 之间差异仅 1 例（在 45 例样本的噪声内）→ 取经典值 1.2，
+ *     不为了几个噪声点去选 0.9（那是过拟合到量尺样本，不是泛化）。
+ *
+ * - `SAT`（归一化饱和点 `s/(s+SAT)`）：BM25 分无上界，而融合公式另两路（kw ≤0.375、
+ *   struct ≤1）都在 [0,1]，需把它压到可比区间。实测 sat=3 时 top1 掉到 0.700（过度饱和）、
+ *   sat=30 掉到 0.717（BM25 被压小、退化成 kw/struct 主导），**[6,10] 是平台区** → 取 8。
+ */
+function bm25Params(over = null) {
+  const num = (v, dft) => {
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? n : dft
+  }
+  // 注入优先（测试与网格搜：同一进程内换参数跑多组，避免"一组一个进程"的加载开销）
+  const o = over && typeof over === 'object' ? over : {}
+  return {
+    k1: num(o.k1 ?? process.env.PONOS_BM25_K1, 1.2),
+    b: num(o.b ?? process.env.PONOS_BM25_B, 0.75),
+    sat: num(o.sat ?? process.env.PONOS_BM25_SAT, 8),
+    // 字段权重 [tag, heading, title]（BM25F，见 bm25OfBlock 的 why）。
+    //
+    // ## 标定结论：**本库上无稳定收益 → 缺省不启用**（2026-09-18，`bm25f` 需显式开启）
+    //
+    // | 样本 | bm25 | bm25f(3,2,2) | bm25f(8,4,2) | bm25f(15,5,3) |
+    // |---|---|---|---|---|
+    // | field 类 40 例 | 31/40 | **33/40** | — | — |
+    // | field 类 80 例 | 0.738 | **0.738** | **0.738** | **0.738** |
+    // | 全量 100 例 | 0.896 | 0.903 | — | — |
+    //
+    // 读法：40 例那两个"改善"在样本翻倍后**完全消失**（80 例上四组配置一模一样）。
+    // 也就是说字段加权**不构成系统性改善**，只是个别用例的排名抖动
+    // （单独构造"词落在标签里"的查询时它确实生效：分数 0.565→0.583、排名 3→2，
+    //  见 scratch/diag-fwcheck.mjs —— 实现正确，但整体分布上不足以改变指标）。
+    //
+    // 为什么不删实现：① 用户明确要求保留该能力；② 它的**适用条件可复验**
+    // （语料里若出现"标签与正文措辞分离"的情况，字段权重才有的可加）；
+    // ③ 它是可判断的开关（`knowledgeScorer: "bm25f"`），不是死代码。
+    // **不启用**的理由是纪律：默认值必须由证据支持 —— 无收益的默认值就是净负债
+    // （多付 tag/heading/title 的 countGrams 成本，收益是 0）。
+    // 三维数组传参：o.fw 为数组（标定/测试注入），否则读 env "3,2,2"。
+    fw: (() => {
+      const parse = (v) => (Array.isArray(v) ? v.map(Number) : String(v ?? '').split(',').map(Number))
+        .filter((x) => Number.isFinite(x) && x >= 0)
+      const fromEnv = parse(process.env.PONOS_BM25_FW)
+      const src = Array.isArray(o.fw) ? o.fw : (fromEnv.length === 3 ? fromEnv : [3, 2, 2])
+      return src.length === 3 ? src : [3, 2, 2]
+    })(),
+  }
+}
+
+/**
+ * 知识库存储：索引读写 + 检索（`configDir` 为 `$PONOS_HOME` 语义的配置目录）。
+ * @param {{ configDir?: string, root?: any, relateMode?: any, extraSpaceSpecs?: any[], scorerMode?: any, scorerParams?: any }} [opts]
+ */
+export function createKnowledgeStore({
+  configDir, root = null, relateMode = null, extraSpaceSpecs = [],
+  scorerMode = null, scorerParams = null,
+} = {}) {
   const kroot = root || knowledgeRoot(configDir)
   const idxDir = join(kroot, '.index')
   let spaces = []
   let docs = []            // = docs.jsonl 行序，即 docIdx 定义
+  /**
+   * 轻量加载（`loadMeta`）路径下的**块总数**（来自 sqlite `meta.nBlocks`）。
+   *
+   * 为什么要有它：块表（实测 110,151 行）是全量 `load()` 里最贵的一段（≈1.4 s）。
+   * `spaces` / `stats` / `tree` 这三个 op 都不看块内容 —— 它们只需要"有哪些空间、
+   * 各有多少篇、总共多少块"。让它们走 `loadMeta` 就能把这 1.4 s 省掉。
+   * 但 `stats().blocks` 是 `docs.reduce(d => d.blocks.length)` 算出来的，块没加载就是 0
+   * （面板显示"0 块"，看起来像索引坏了）⇒ 这里存一份权威计数顶上。
+   * **恒为 null 表示"块真在内存里"**（全量 load 后置回 null），避免两条路径给出两种口径。
+   */
+  let metaBlockCount = null
   let idf = new Map()
   let inverted = new Map() // gramHash -> { g, df, p: [[docIdx, w]] }
   let linkOut = new Map()  // docId -> [{ to, target }]
   let builtAt = null
   let indexBytes = 0
+
+  /**
+   * 检索期的**标签别名解析器**（EVO-06 ②a，2026-10-18）—— 惰性构造 + 按 mtime 失效。
+   *
+   * 【做什么】把"别名"解析到"规范名"，让 `structBoostOf` 两侧都能命中：
+   *   查询说别名、文档标签是规范名 ⇒ 命中；查询说规范名、文档标签存别名 ⇒ 也命中。
+   *
+   * 【为什么不改索引 / 不 bump INDEX_VERSION】
+   *   索引里存的原字符串**不变**，展开只发生在查询期（一次检索几十个词，成本可忽略）。
+   *   台账把 ② 当成"必须 bump + 全库重建"的一整块 —— 那对 ②b（标签关系边，
+   *   构建期持久化产物）成立，对 ②a（检索打分）**不成立**。
+   *
+   * 【为什么按 mtime 失效而不是每次读】`registry.json` 每次检索都读盘会拖慢检索；
+   *   但**同一进程内合并标签后必须能生效**（否则用户合并完标签、检索却没变化，
+   *   看起来像"合并没起作用"）。折中：缓存 + 每次 stat 比对 mtimeMs（一次 stat 很便宜）。
+   *
+   * 【失败降级】注册表不可读/损坏 ⇒ 返回 null（`structBoostOf` 见 null 即退回原字符串匹配）。
+   *   检索绝不因注册表坏了而失败。
+   */
+  let _tagResolverCache = null
+  let _tagResolverMtime = -1
+  /**
+   * 查询内**只 stat 一次**的代数（2026-10-26）。
+   *
+   * 【为什么必须有它】`scoreBlock` / `scoreBlockBm25` 对**每个候选块**都要 tag 解析器，
+   * 而本函数每次调用都 `statSync` 一遍 —— 注册表**不存在**时更糟：`statSync` 抛异常走 catch，
+   * 而 catch 又把 `_tagResolverMtime` 重置成 -1 ⇒ 下一块重新 stat、重新抛。实测（真实库
+   * 521 篇 / topK=5 / 候选 20 篇）CPU profile 里 **42% 的样本**落在 `searchTagResolver` 的
+   * statSync 上，单次检索因此多付 ~2.5s；同一查询里 mtime 不可能变，这次 stat 全是白付。
+   *
+   * 【为什么不用 TTL/负缓存】那会让"用户在界面里合并标签后检索不生效"这个已知病回来
+   * （本函数最早的注释就是为它写的）。代数方案保住语义：**每次 `searchInner` 自增一次**，
+   * 同一次查询内复用同一份判定，跨查询仍然逐次比对 mtime。
+   */
+  let _tagResolverStamp = 0
+  let _tagResolverStampSeen = -1
+  function beginTagResolverQuery() { _tagResolverStamp += 1 }
+  function searchTagResolver() {
+    if (_tagResolverStampSeen === _tagResolverStamp) return _tagResolverCache
+    _tagResolverStampSeen = _tagResolverStamp
+    try {
+      const p = join(String(configDir || '.'), 'tags', 'registry.json')
+      const st = statSync(p)          // 文件不存在会抛 ⇒ 走 catch 返回 null
+      if (_tagResolverCache && st.mtimeMs === _tagResolverMtime) return _tagResolverCache
+      const reg = loadTagRegistry(configDir, { strict: false })
+      const resolve = makeTagResolver({ configDir, registry: reg })
+      _tagResolverCache = (raw) => resolve(raw)
+      _tagResolverMtime = st.mtimeMs
+      return _tagResolverCache
+    } catch {
+      // 注册表不存在（还没建过标签）/ 不可读 ⇒ 不做别名展开，行为与本项修复前一致
+      _tagResolverCache = null
+      _tagResolverMtime = -1
+      return null
+    }
+  }
+  /**
+   * 生效的**索引存储后端**（2026-09-29）：`'jsonl'`（缺省，既有实现）| `'sqlite'`。
+   * 判定完全交给 `knowledge-backend-sqlite.mjs#backendOf`（读 `<configDir>/config.json`），
+   * 本文件只消费它的结论 —— **判定口径只有一处**，否则"开关看起来开着但走的是旧路径"这类
+   * 静默失效必然出现（本仓在 CLI flag 转发上已反复踩过同一坑）。
+   * 每次 `load()` 重新判定：回退演练要能"改配置 → 下次加载即换后端"（spec §8.7）。
+   */
+  let backend = 'jsonl'
+  /** SQLite 连接句柄（仅 sqlite 后端非 null；每次 load 先关旧的，避免句柄泄漏）。 */
+  let sqliteDb = null
+  /** @type {null | (() => void)} */
+  let sqliteClose = null
+  /**
+   * `inverted` 的**行数**（sqlite 后端不倒排物化到内存 ⇒ `inverted.size` 恒为 0，
+   * 而 `stats().grams` 是既有消费方依赖的指标，必须仍有真值）。来源：`meta.invLines`。
+   */
+  let gramCount = 0
   // 索引指纹表（manifest.files）与 links.jsonl 的当前行集：staleness 精确判定与
   // 增量更新的共享状态。**唯一写入口是 persist()**（全量/增量共用），避免两套写盘逻辑漂移。
   let lastFiles = {}
@@ -524,6 +702,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * 本轮索引的**截断留痕**（2026-09-14 批次 4）。`truncated: true` 表示"有文档没进索引"——
    * 与 `blocksTruncated` 同一性质：必须被看见的信号，不是内部细节。
    * `staleSweepSkipped` 表示"截断导致'磁盘已删'清扫被跳过"（见 indexStale 的注释）。
+   *
+   * ⚠️ 2026-09-30 裁决后（内核路径**无上限**）本留痕**恒为未截断**：它的唯一可能触发者
+   * 是"调用方给了 `walkMd` 一个有限 `maxFiles`"，而内核不再这么做。保留字段与通道的理由：
+   * GUI/台账形状稳定 + 若将来有人重新引入限流，出声机制仍在（无声丢数据是明令禁止的病灶）。
    */
   let lastTruncation = null
   let lastLinkRows = []
@@ -535,21 +717,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   // （buildRelations / relateIncremental）里被重置并累加 —— 读时校验剔除**绝不**计入，
   // 否则同一库的 stats 会随查询历史漂移（spec §7.2，不可复现 = 指标失效）。
   let relDropped = { noShared: 0, missingEnd: 0, capped: 0 }
-  // 块上限截断计数（S6）：护栏触发的**可观测**留痕。原先 `slice(0, MAX_BLOCKS_PER_DOC)`
-  // 静默丢尾部 ⇒ "文件里有、知识库没有"无迹可循（实测：合并后文件 302 条 / 索引 254 条）。
-  // 只统计**本次建/更新索引**期间的截断，随 scanAll / updateDoc 重置，语义同 relDropped。
-  let blockCaps = { docs: 0, droppedBlocks: 0, docIds: [] }
-  // 截断块并**出声**：护栏可以存在，静默丢数据不行。
-  const capBlocks = (doc) => {
-    if (!doc || !Array.isArray(doc.blocks) || doc.blocks.length <= MAX_BLOCKS_PER_DOC) return doc
-    const dropped = doc.blocks.length - MAX_BLOCKS_PER_DOC
-    blockCaps.docs += 1
-    blockCaps.droppedBlocks += dropped
-    blockCaps.docIds.push(doc.id)
-    console.warn(`[knowledge] ${doc.id}: 块数 ${doc.blocks.length} 超上限 ${MAX_BLOCKS_PER_DOC}，尾部 ${dropped} 块**未索引**（文件里仍在，但检索/关联/图谱都看不到）`)
-    doc.blocks = doc.blocks.slice(0, MAX_BLOCKS_PER_DOC)
-    return doc
-  }
+  // ★ 2026-09-30 裁决：**块数无上限 ⇒ 不存在"被丢弃的块"**。`capBlocks`（原按
+  //   `MAX_BLOCKS_PER_DOC` 截尾部并 warn）已删除，块**全部**进索引。`stats().blocksTruncated`
+  //   字段形状保留（GUI/消费方不必分支），值恒为零 —— 它是"一旦有人重新引入丢弃式限流，
+  //   必须从这里报出来"的通道，而不是当下的真实风险。
   // docs 的"代数"：docs 被整体替换（buildIndex / loadIndexFromDisk）或**原地改写**
   // （updateDoc 的 `docs[i] = 新doc`）时自增。读路径的缓存（块表 / 标题表）以此作键 ——
   // 不能用 `docs` 数组引用：updateDoc 原地改，引用不变，按引用缓存会取到已被替换的旧块，
@@ -561,18 +732,16 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   const file = (name) => join(idxDir, name)
 
   function scanAll() {
-    blockCaps = { docs: 0, droppedBlocks: 0, docIds: [] }
     const acc = { docs: [], links: [] }
-    // 截断统计（2026-09-14 批次 4）：按空间记录"撞到 maxFiles 上限、还有文档没进索引"。
-    // 旧实现静默停手 → 用户看到"索引成功"，而超出上限的文档搜不到、图谱里没有、
-    // 统计数字也不含，且没有任何迹象说明原因。
-    const trunc = { truncated: false, limit: FILE_LIMIT_PER_SPACE, spaces: [], count: 0 }
+    // 截断统计（2026-09-14 批次 4）：按空间记录"还有文档没进索引"。
+    // ⚠️ 2026-09-30 裁决后内核**不传 maxFiles** ⇒ 恒不触发；字段保留的理由见 lastTruncation 注释
+    //（`limit: null` = 无上限，而不是"上限是 null 这个数"）。
+    const trunc = { truncated: false, limit: null, spaces: [], count: 0 }
     for (const space of spaces) {
       const stats = {}
-      for (const { absPath, relPath } of walkMd(space.root, { maxFiles: FILE_LIMIT_PER_SPACE, stats })) {
+      for (const { absPath, relPath } of walkMd(space.root, { stats })) {
         try {
           const parsed = parseDocFile({ absPath, space, relPath })
-          capBlocks(parsed.doc)
           acc.docs.push(parsed.doc)
           acc.links.push(...parsed.links)
         } catch { /* 单文档解析失败：跳过，不拖垮整库 */ }
@@ -737,6 +906,42 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     } catch { /* 磁盘不可写不致命：内存索引仍可用（对齐 graph.mjs 纪律） */ }
   }
 
+  /**
+   * `links.jsonl` → 行数组（**唯一定义**：`loadIndexFromDisk` 与 sqlite 后端的 `adopt` 共用）。
+   * 为什么抽出来：两条加载路径若各写一遍链接读回逻辑，必然漂移 —— 而漂移的表现是
+   * "某个后端重启一次就丢了锚点/嵌入/ref 边"这类**静默**能力缺失（该文件顶部注释记着
+   * 当年 ref 边消失的教训）。
+   */
+  function readLinksFromDisk() {
+    try { return parseJsonl(readFileSync(file('links.jsonl'), 'utf-8')) } catch { return [] }
+  }
+
+  /**
+   * 链接行 → `linkOut`（docId → 出边）。**字段必须整组读回**（`block`/`line`/锚点三件套/
+   * `embed`/`self`）：`block` 是条目级 ref 边的源；`anchorKind`+`anchorRef` 供阅读视图跳转；
+   * `embed` 决定 `![[x]]` 内联渲染；`self` 处理 `[[#x]]` 同文档锚点。少回填一个字段，
+   * 就会表现为"重启后该能力整体消失"（磁盘上有、内存里没有）。
+   */
+  function linkOutOf(linkRows) {
+    const out = new Map()
+    for (const l of linkRows) {
+      const row = {
+        to: l.to, target: l.target, block: l.block ?? null, line: l.line ?? null,
+        anchor: l.anchor || '', anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
+        embed: l.embed === true, self: l.self === true,
+      }
+      const arr = out.get(l.from)
+      if (arr) arr.push(row)
+      else out.set(l.from, [row])
+    }
+    return out
+  }
+
+  /** `related.jsonl` → 物化行（与 `linkOut` 同款：两条加载路径共用一个定义）。缺失 ⇒ 空数组。 */
+  function readRelatedFromDisk() {
+    try { return parseJsonl(readFileSync(file('related.jsonl'), 'utf-8')) } catch { return [] }
+  }
+
   function loadIndexFromDisk() {
     const raw = (n) => { try { return readFileSync(file(n), 'utf-8') } catch { return '' } }
     const manifest = (() => { try { return JSON.parse(raw('manifest.json') || '{}') } catch { return {} } })()
@@ -756,32 +961,15 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     //  - 指纹缺失：off→on 切换、上一版索引、文件被误删 —— 无从证明文件完整，宁可重算
     // 用 `<` 而非 `!==` 与 docLines 同理（多出只可能是未来的增量追加，不算损坏）。
     if (relateOn()) {
-      const relRows = parseJsonl(raw('related.jsonl'))
+      const relRows = readRelatedFromDisk()
       if (typeof manifest.relLines !== 'number' || relRows.length < manifest.relLines) return false
       relEdges = relRows
     }
     const inv = new Map()
     for (const e of invRows) inv.set(e.g, { g: e.g, df: e.df, p: e.p })
     inverted = inv
-    const linkRows = parseJsonl(raw('links.jsonl'))
-    linkOut = new Map()
-    for (const l of linkRows) {
-      // `block`/`line` 必须一并读回（S5.1）：ref 边以"链接所在的**条目**"为源，
-      // 只回填 to/target 会让**重载索引后 ref 边整体消失**（物化文件里有、内存里没有），
-      // 表现为"重启一次引用关联就没了"。
-      const row = {
-        to: l.to, target: l.target, block: l.block ?? null, line: l.line ?? null,
-        // `anchor`/锚点/`embed`/`self` 同样必须读回：阅读视图要靠 anchorKind+anchorRef 跳到
-        // "那一节/那个块"，靠 embed 把 `![[x]]` 渲染成内联内容，靠 self 处理 `[[#x]]`。
-        // 只回填 to/target 会让这些能力**在重载索引后整体消失**（磁盘上有、内存里没有），
-        // 表现为"重启一次，嵌入变回普通链接、锚点跳不动"——与当年 ref 边消失同一类 bug。
-        anchor: l.anchor || '', anchorRef: l.anchorRef || '', anchorKind: l.anchorKind || '',
-        embed: l.embed === true, self: l.self === true,
-      }
-      const arr = linkOut.get(l.from)
-      if (arr) arr.push(row)
-      else linkOut.set(l.from, [row])
-    }
+    const linkRows = readLinksFromDisk()
+    linkOut = linkOutOf(linkRows)
     const gramDocs = []
     for (const d of docs) {
       for (const b of d.blocks) {
@@ -815,7 +1003,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     let truncated = false
     for (const space of spaces) {
       const stats = {}
-      for (const { absPath, relPath } of walkMd(space.root, { maxFiles: FILE_LIMIT_PER_SPACE, stats })) {
+      // 内核**不传 `maxFiles`** ⇒ 逐文件比对覆盖空间内**全部** .md（2026-09-30 裁决：
+      // 知识库无上限；比对全量文件也让"磁盘已删"判定不会再因截断而失真）。
+      for (const { absPath, relPath } of walkMd(space.root, { stats })) {
         const id = toDocId(space.id, relPath)
         seen.add(id)
         const rec = lastFiles[id]
@@ -828,7 +1018,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       if (stats.truncated) truncated = true
     }
     // "磁盘已删"的清扫**在截断时必须跳过**（2026-09-14 批次 4）：
-    // seen 里没有的文件可能只是排在 5001 名之后、这轮根本没走到 —— 据此判"已删"会让
+    // seen 里没有的文件可能只是"排在限流之外、这轮根本没走到" —— 据此判"已删"会让
     // >5000 文件的库**每次 load 都全量重建**（而且重建写回的 lastFiles 依然缺那些文件，
     // 于是下一轮又重建）：索引永远追不上，CPU 白烧，还会和写入互相抢盘。
     // 代价是超限空间里真的删掉文件时这一轮发现不了 —— 诚实的不确定 > 假装知道。
@@ -838,6 +1028,161 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       lastTruncation = { ...(lastTruncation || {}), staleSweepSkipped: true }
     }
     return false
+  }
+
+  // ── SQLite 后端（2026-09-29）：加载 / 回退 / 重建 ─────────────────────────
+
+  /**
+   * `load()` 的 sqlite 分支。三步，顺序是刻意的：
+   *
+   * ① **先用现成的库**（若它健康且不陈旧）：开库 → `isHealthy`（fail-closed）→ 采纳
+   *    （读 docs/blocks/idf/files/meta；**不倒排**）→ `indexStale()` 复核真源（md 有改动 ⇒ 重建）。
+   *    这是冷启动主路径：实测（真实库 21670 块）开库 2 ms + 健康检查 179 ms + docs 2 ms
+   *    + blocks 124 ms + idf 199 ms，对照组 jsonl 冷加载 2176 ms。
+   * ② **重建**（库不存在/不健康/版本不符/陈旧/`force`）：**先试盘上 jsonl**（便宜，实测 1.3 s），
+   *    不可用或已陈旧才 `buildIndex()`（贵，实测 18 s）——两者都比"直接重扫"便宜或等价的正确来源。
+   *    然后 `migrateToSqlite` 写库并采纳。
+   * ③ **任何异常 ⇒ 回落 jsonl 后端**（`console.warn`，**绝不抛进会话**）：对齐
+   *    `knowledge-search.mjs` 的"检索故障不阻断会话"纪律（spec §7 风险表）。
+   *
+   * 关于"为什么不在 sqlite 模式下把倒排物化到内存"：那正是本次要省掉的那份成本
+   * （读 15.6 MB + 解析 14 万行 JSON = 371 ms，再加 696 ms 全库重分词）。查询时按 gram 直查
+   * 才是收益来源（实测 4 个 gram < 1 ms）。
+   */
+  function loadViaSqlite({ force, skipStaleCheck = false }) {
+    const target = dbPathOf(configDir)
+    const dropSqlite = () => {
+      if (sqliteClose) { try { sqliteClose() } catch { /* 关库失败不影响主流程 */ } }
+      sqliteDb = null
+      sqliteClose = null
+    }
+    const adopt = (h) => {
+      // ★ 句柄所有权**第一行**就登记（2026-11-01）：原来登记在最后两行，于是 adopt 中途抛出
+      //   （readMeta/loadDocs/SQLITE_BUSY…）时调用方的 catch → dropSqlite() 看到 sqliteClose === null
+      //   ⇒ 这个 DatabaseSync 无人 close，WAL/SHM 句柄留到进程退出。同文件 loadMeta 早就写对了
+      //   （局部 h + catch 里 h.close()），此处与之一致。
+      sqliteDb = h.db
+      sqliteClose = h.close
+      try {
+        const meta = readMeta(h.db)
+        const metas = loadDocs(h.db)
+        const byIdx = fetchBlocks(h.db, metas.map((m) => m.i))
+        const blocksByIdx = new Map(byIdx.map((r) => [r.docIdx, r.blocks]))
+        docs = metas.map((m) => ({ ...m, blocks: blocksByIdx.get(m.i) || [] }))
+        docsGen += 1 // docs 换源（库→内存）→ 读路径缓存失效
+        // ★ 链接与关联**必须一并采纳**（2026-09-29 实测踩坑）：漏了它们不会报错，但检索的
+        //   图扩展（`linkOut`）与关联锚点（`relEdges`）会静默消失 —— 实测表现为
+        //   "同一条查询 jsonl 返回 764 条候选、sqlite 只返回 20 条"，而 top-5 的表面分数几乎一样
+        //   （极易被误判成"没问题"）。SQLite 的 DDL 里**没有** links 表（spec §5.2 定格），
+        //   它们仍以 jsonl 派生文件为准（links.jsonl 实测 1 KB / related.jsonl 数百 KB）。
+        lastLinkRows = readLinksFromDisk()
+        linkOut = linkOutOf(lastLinkRows)
+        relEdges = relateOn() ? readRelatedFromDisk() : []
+        idf = loadIdf(h.db)
+        lastFiles = loadFiles(h.db)
+        builtAt = meta.builtAt || null
+        gramCount = Number(meta.invLines) || 0
+        indexBytes = indexBytesOnDisk(target)
+        // sqlite 侧没有"行数指纹"这个概念（spec §5.5：那是 jsonl 路径的守卫，sqlite 用
+        // 事务 + quick_check + schemaVersion）⇒ 留痕清空，而不是把 JSONL 的结论搬过来冒充。
+        lastTruncation = null
+      } catch (e) {
+        // 半途失败：撤销登记并**自己关掉**这个句柄，再抛出（调用方按原逻辑回落 jsonl）
+        sqliteDb = null
+        sqliteClose = null
+        try { h.close() } catch { /* 已关闭 */ }
+        throw e
+      }
+    }
+    try {
+      dropSqlite()                            // 每次 load 先关旧句柄（防句柄泄漏）
+      if (!force && existsSync(target)) {
+        const h = openIndex(target)
+        if (isHealthy(h.db)) {
+          adopt(h)
+          // 主路径：库可用且真源未变。`skipStaleCheck`（update-doc 专用，见 load 的 why）
+          // 直接采纳现成库：写入路径只关心**目标文档**，其余文件是否陈旧交给下一次读的
+          // 常规 load 判定 —— 若在这里因"有文件新增/被改"就全量重建，一次蒸馏写入会先付
+          // 30-40 s 重建（真实库实测），必然越过前端 30 s 写超时。
+          if (skipStaleCheck || !indexStale()) return
+          dropSqlite()                           // 真源变了 ⇒ 走重建（下面）
+        } else {
+          h.close()                              // 残库/版本不符：判损坏，重建
+        }
+      }
+      // 重建：先试盘上 jsonl（便宜），不可用或已陈旧才全量重扫
+      const jsonlOk = force ? false : loadIndexFromDisk()
+      if (!jsonlOk || force || (!skipStaleCheck && indexStale())) buildIndex()
+      // ★ **迁移前把内存状态归一化到"盘上 jsonl 读回来"的那一份**（2026-09-29 实测踩坑）：
+      //   迁移算出的 `idf` 表是**冻结**的（这就是收益来源），而 jsonl 路径每次加载都会
+      //   用**从 docs.jsonl 读回来的块**重算 idf。`buildIndex` 用的是**刚解析的块**，两者在
+      //   `persist` 的落盘字段集上不是同一份（落盘只保留 `n/kind/level/text/line/tag/full`）
+      //   ⇒ 直接拿 build 的结果迁移，会让 sqlite 侧 idf 与 jsonl 侧差 ~1e-6，**分数不再逐位相同**
+      //   （实测：两后端 top-5 的 blockId 一样、分数差在第 6 位小数 —— 最容易被"看起来没问题"放过的形态）。
+      //   故重建之后**再读一次盘**：让迁移的源与 jsonl 读取路径的源逐字同源。
+      //   代价：重建路径多付一次 `loadIndexFromDisk`（实测 1.3 s 量级），只在重建时发生。
+      if (!jsonlOk || force) {
+        const normalized = loadIndexFromDisk()
+        if (!normalized) buildIndex()   // 盘上文件不可读（写盘失败等）⇒ 只能退回内存态（并在下面告警）
+      }
+      // 写入库。迁移的源 = **本 store 的内存索引**（刚 load 完，与盘上 jsonl 等价），
+      // 故传一个只暴露读取口的最小 shim —— 不必让 store 自引用自己（那要额外的延迟绑定）。
+      migrateToSqlite({
+        configDir,
+        store: {
+          getDocs: () => docs,
+          getInverted: () => inverted,
+          getIdf: () => idf,
+          stats: () => ({ version: INDEX_VERSION, builtAt }),
+        },
+      })
+      const h = openIndex(target)
+      adopt(h)
+    } catch (e) {
+      // ③ 降级：**不抛进会话**。回落 jsonl 后仍要保证"这次 load 有可用索引"。
+      console.warn(`[knowledge] sqlite 后端不可用，回落 jsonl：${e?.message || String(e)}`)
+      dropSqlite()
+      backend = 'jsonl'
+      try {
+        const ok = loadIndexFromDisk()
+        if (!ok || force || (!skipStaleCheck && indexStale())) buildIndex()
+      } catch (e2) {
+        // 连 jsonl 也读不了 ⇒ 让调用方看见（这是真故障，不是"换个档位"）
+        throw e2
+      }
+    }
+  }
+
+  /** 库文件在盘上占的字节（含 WAL：它们是同一份索引的物理组成）。 */
+  function indexBytesOnDisk(target) {
+    let n = 0
+    for (const p of [target, `${target}-wal`, `${target}-shm`]) {
+      try { n += statSync(p).size } catch { /* 不存在 = 0 */ }
+    }
+    return n
+  }
+
+  /**
+   * 运行期降级（sqlite 读/写失败时调用）：换回 jsonl 后端并**把倒排物化到内存**。
+   *
+   * 为什么必须重新加载而不是"直接继续用 sqlite 的内存状态"：sqlite 路径**不倒排物化**
+   * （那是省成本的关键），故一旦库不可用，内存里就没有 `inverted`。回落 = 真的回到 jsonl 读路径
+   * （读盘 + 必要时重建）—— 语义与"启动时就是 jsonl 后端"完全一致，不引入第三种中间状态。
+   *
+   * 纪律：**只告警，不抛异常**（对齐 knowledge-search.mjs 的"检索故障不阻断会话"）。
+   * 失败时留一个空索引也能让调用方拿到"空结果"而不是 500 —— 但那种情形极罕见（jsonl 也读不了），
+   * 故这里让异常向上冒（`loadIndexFromDisk`/`buildIndex` 内部本身已有大量兜底）。
+   */
+  function fallbackToJsonl(err) {
+    if (backend !== 'sqlite') return
+    console.warn(`[knowledge] sqlite 读取失败，回落 jsonl：${err?.message || String(err)}`)
+    backend = 'jsonl'
+    gramCount = 0
+    if (sqliteClose) { try { sqliteClose() } catch { /* 关库失败：不影响回落 */ } }
+    sqliteDb = null
+    sqliteClose = null
+    const ok = loadIndexFromDisk()
+    if (!ok || indexStale()) buildIndex()
   }
 
   // ── 检索（Task 7）───────────────────────────────────────────────────────
@@ -854,8 +1199,124 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 等于把 `不回显` 这类用户真会敲的词判为不相关（实测退化 0.667→0.084，见 indexTextOf 注释）。
     // `full: b.full` 保持原样：它是 `mode='full'` 的正文来源，也是"内容落在摘要截断之外"的兜底信号。
     const kw = keywordScore({ tag: b.tag || '', summary: retrievalText(b), full: b.full || '', theme: doc.title }, kws)
-    const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws })
+    const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws, tagResolver: searchTagResolver() })
     return { cos, kw, struct }
+  }
+
+  /**
+   * BM25 打分上下文（P1，2026-09-18）。惰性构造：**只有 bm25 模式才付这份成本**
+   * （legacy 路径一次都不走这里，行为与性能逐字节不变）。
+   *
+   * **why dl 用字符数而不是 gram 数**：gram 数要全库分词（与建索引同量级的几秒），
+   * 字符数只需遍历块取 `length`（毫秒级），而中文里"bigram 数 ≈ 字符数"——
+   * 长度归一化要的是"这块比平均块长多少"这一比例，用字符数是 BM25 的常规做法（dl 是长度代理）。
+   * `indexTextOf(b).length` 与 tf 同源（都取含标签的索引文本），口径一致。
+   */
+  // avgdl 与参数无关、只与语料有关 → 进程内算一次就够（每次 search 重算是白烧：
+  // 6917 次 indexTextOf 字符串拼接虽然只有几毫秒，但它是**每次查询**的固定成本）。
+  let bm25Stats = null
+
+  function makeBm25Ctx(over = null, mode = 'bm25') {
+    const p = bm25Params(over || scorerParams)
+    if (!bm25Stats) {
+      // 字段级平均长度（BM25F 的长度归一化基准）。**用字符长度而非 gram 数**：
+      // 要的是"这块比平均长多少"这一比例，字符数就是合格的长度代理（BM25 的 dl 本就是代理量），
+      // 而 gram 数需要全库分词（与建索引同量级的秒级成本）—— 每次首查都付不起。
+      const acc = { body: 0, tag: 0, heading: 0, title: 0 }
+      let n = 0
+      for (const d of docs) {
+        for (const b of d.blocks) {
+          acc.body += retrievalText(b).length
+          acc.tag += String(b.tag || '').length
+          acc.heading += String(b.heading || '').length
+          acc.title += String(d.title || '').length
+          n += 1
+        }
+      }
+      const avg = (v) => (n && v ? v / n : 1)
+      bm25Stats = {
+        avgdl: avg(acc.body), blocks: n,
+        avgBody: avg(acc.body), avgTag: Math.max(1, avg(acc.tag)),
+        avgHeading: Math.max(1, avg(acc.heading)), avgTitle: Math.max(1, avg(acc.title)),
+      }
+    }
+    // 字段权重只在 bm25f 下生效：`bm25` 是 P1 已验证的单字段形态，必须保持逐字一致
+    // （否则"bm25f 比 bm25 好多少"这个归因就混进了"bm25 自己变了"）
+    return { ...p, ...bm25Stats, fw: mode === 'bm25f' ? p.fw : [0, 0, 0] }
+  }
+
+  /**
+   * 块级 BM25 分（未归一化）。
+   *
+   * 与 legacy 的 cosine 有两个结构性差别，正是 P0 基线暴露的缺陷所在：
+   *  ① **tf 饱和**：`f(k1+1)/(f + k1·…)` —— 一个 gram 在块里出现 10 次不比出现 3 次强 3 倍
+   *     （legacy 的 `(1+√tf)` 是次线性但无上界）；
+   *  ② **部分长度归一化**：`(1-b+b·dl/avgdl)` 且 `b=0.75` —— legacy 是**完全**归一化
+   *     （除以向量模长，等价 b=1），长块被系统性压制。P0 基线里 heading 94% vs
+   *     table 52% / para 58% 就是这个压制留下的指纹。
+   *
+   * **idf 用块级 df（N = 块数）**——与 `loadIndexFromDisk()` 中 `gramDocs` 每条对应**一个块**、
+   * `buildIdf` 因此按块统计 df 的实现一致（2026-09-29 裁决：以实现为准，本注释此前误写为"文档级"）。
+   * ★ 为什么必须写清：盘上 `inverted.jsonl` 行的 `df` 是**文档级**（`buildIndex` 里 `e.docs.add(i)`，
+   *   i 是文档下标）⇒ 二者不可互换（实测本机语料仅 43.8% 的 gram 两侧相等；若误用文档级 df 生成 idf，
+   *   100% 的 gram idf 相对差 >5%、最大 110%，全库排序会**静默改变**）。
+   *   守卫：kernel-tests/knowledge-idf-semantics.test.mjs（jsonl 侧）/ knowledge-backend-parity.test.mjs（sqlite 侧）。
+   */
+  function bm25OfBlock(b, doc, qGrams, ctx) {
+    const fwOn = Array.isArray(ctx.fw) && ctx.fw.some((w) => w > 0)
+    // 正文文本：BM25F 下用 `retrievalText`（**不含** entryTag），让 tag 走独立字段 ——
+    // 否则标签会被计两次（一次随正文、一次作字段权重），字段权重就失去意义。
+    // 单字段模式（bm25）保持 `indexTextOf`（含 tag），与 P1 已验证的口径逐字一致。
+    const text = fwOn ? retrievalText(b) : indexTextOf(b)
+    const tf = countGrams(text)
+    const dl = text.length || 1
+    const denomLen = 1 - ctx.b + ctx.b * (dl / ctx.avgdl)
+    // 短字段（tag / heading / title）的 tf：文本都很短，countGrams 便宜。
+    // **不做长度归一化**（stepped normalization）：这三个字段长度方差小（标签固定格式、
+    // 标题一行），归一化的收益低于它带来的解释成本；正文才需要归一化，因为它跨块方差最大。
+    let tfTag = null; let tfHead = null; let tfTitle = null
+    if (fwOn) {
+      if (b.tag) tfTag = countGrams(String(b.tag))
+      if (b.heading) tfHead = countGrams(String(b.heading))
+      if (doc && doc.title) tfTitle = countGrams(String(doc.title))
+    }
+    let s = 0
+    const hits = []
+    for (const [gram, qtf] of qGrams) {
+      let f = tf.get(gram) || 0
+      if (fwOn) {
+        // BM25F 的字段加权：把各字段的 tf 按权重叠加成"有效词频" f̃，再走同一个饱和公式。
+        // 这样"标签里出现"比"正文里出现"更有分量，而正文的长块劣势仍由 denomLen 承担。
+        if (tfTag) f += ctx.fw[0] * (tfTag.get(gram) || 0)
+        if (tfHead) f += ctx.fw[1] * (tfHead.get(gram) || 0)
+        if (tfTitle) f += ctx.fw[2] * (tfTitle.get(gram) || 0)
+      }
+      if (!f) continue
+      const idfV = idf.get(gram) ?? 1
+      // qtf（查询里的词频）在 BM25 里通常不进公式；保留变量名是为了不误用成 tf
+      void qtf
+      const contrib = idfV * ((f * (ctx.k1 + 1)) / (f + ctx.k1 * denomLen))
+      s += contrib
+      // 命中词（P2 可解释回执）：tf map 本来就算出来了，**顺手收集零成本**。
+      // 这让模型能回答"为什么返回这条"——来源材料三次强调这是 BM25 的独特优势
+      // （字面匹配让模型能理解并据此改写查询），而回执里只给一个分数等于把它扔掉。
+      hits.push({ g: gram, w: contrib })
+    }
+    hits.sort((a, b) => b.w - a.w)
+    return { score: s, hits: hits.slice(0, 5).map((h) => h.g) }
+  }
+
+  /** BM25 版块级评分：`cos` 槽位放**归一化 BM25 分**，kw/struct 与 legacy 同源同公式。 */
+  function scoreBlockBm25(doc, b, qGrams, qtext, kws, degraded, ctx) {
+    // 降级路（查询 gram 全落空）与 legacy 一致地不参与向量/BM25 路：没有词可匹配
+    const r = degraded ? { score: 0, hits: [] } : bm25OfBlock(b, doc, qGrams, ctx)
+    const raw = r.score
+    const cos = raw > 0 ? raw / (raw + ctx.sat) : 0
+    const kw = keywordScore({
+      tag: b.tag || '', summary: retrievalText(b), full: b.full || '', theme: doc.title,
+    }, kws)
+    const struct = structBoostOf({ block: { kind: b.kind }, doc, query: qtext, keywords: kws, tagResolver: searchTagResolver() })
+    return { cos, kw, struct, bm25: raw, hits: r.hits }
   }
 
   /** 块所属 heading（取该行之前的最后一个 heading）——卡片与行内结果都要展示归属小节。 */
@@ -876,6 +1337,10 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       // （MemorySearch 转发的适配层）能原样渲染 `- [主题|标签] 摘要 -- 全文`，
       // 而不必为了拿 tag/full 再回调 getDoc 做一次块查询。
       tag: b.tag || null, text: b.text, full: b.full || null,
+      // P2 可解释回执（纯增量）：BM25 路径才有的"命中词"；legacy 下为 null（零回归）。
+      // **故意不造"命中字段"**：BM25-lite 没有字段级 tf（字段建模是 P1-full 的事），
+      // 硬报一个字段等于编一个不准的信息给模型 —— 宁可少给，不给假的。
+      hits: sc.hits || null,
     }
   }
 
@@ -954,7 +1419,26 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
   }
 
-  function searchInner({ query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet' } = {}) {
+  function searchInner({
+    query = '', keywords = [], spaces: only = null, topK = 5, maxBytes = 2048, mode = 'snippet',
+    // P2 分页：`topK` 仍控"一次给几条"（上下文预算纪律不变），深度靠 offset 续看 ——
+    // 来源材料的"检索深度要够"在本库的落地方式不是"一次给 1000 条"，而是"能翻页找深"。
+    offset = 0,
+    // 候选池大小覆盖（P1b，2026-09-18）：检索深度旋钮。缺省沿用公式 `max(topK*4, 20)`。
+    // why 留成参数：来源材料（Pi-Serini）实测"深度加大 → surfaced recall +25.3%"，
+    // 而本库的 P0 诊断显示剩余 miss **主要在候选之外**（文档压根没进池），
+    // 故深度是本库下一步最该标定的旋钮 —— 但它是"召回换耗时"的取舍，必须由量尺定价，
+    // 不能拍脑袋调大（候选池每翻倍，终评要遍历的块数同步翻倍）。
+    candTopN = null,
+    // 每篇文档最多贡献几个块（P1b）。缺省：legacy=1（与改造前一致）、bm25/bm25f=2。
+    perDoc = null,
+    // P1 参数覆盖（单次查询级）：让"同一进程内换 k1/b 跑多组"成为可能 —— 否则每次
+    // 标定都要重建 store（读 11MB 索引 + 解析），网格搜一多半时间耗在这上面。
+    bm25: bm25Over = null,
+  } = {}) {
+    // 本次查询的 tag 解析器判定起点（见 searchTagResolver 的代数注释）：块打分里每块都会
+    // 问一次解析器，这里推进一代 ⇒ 整次查询只 stat 一次 registry.json。
+    beginTagResolverQuery()
     const q = String(query || '').trim()
     const kws = (keywords || []).map((k) => String(k).trim()).filter(Boolean)
     const rawText = q || kws.join(' ')
@@ -965,7 +1449,11 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 检索语法层（批次 3）：解析成结构化查询，再"先过滤、后打分"。
     // 过滤器放打分**之前**不只是省算力：语义上就是"在这些文档里搜"，而不是"搜完再扔掉一些"。
     const parsed = parseSearchQuery(rawText)
-    const meta = { query: queryMeta(parsed) }
+    // 打分器模式解析提前到这里：让**每一处 return**（含 enumerate / 空查询 / 语法错误）
+    // 都带 `scorer`，否则消费方（量尺、UI）无法区分"这次结果是哪个打分器给的"——
+    // 那正是 P1 期间最需要确认的事（开关没生效却以为生效了，比不做还糟）。
+    const scorer = resolveScorerMode(configDir, scorerMode)
+    const meta = { query: queryMeta(parsed), scorer }
     if (!parsed.ok) {
       // 解析失败（无效正则 / 查询串过长）→ **明确报错**，不静默当成文本搜。
       // 静默降级会给出"看起来能搜到、语义完全不同"的结果，比报错难排查得多。
@@ -987,12 +1475,50 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     const qvec = vectorizeText(qtext, { idf })
 
+    // P1 打分器分派（2026-09-18）：只换"块级怎么算分"这一步，其余（候选生成、过滤、
+    // 图扩展、融合权重、截断、关联）一律沿用 —— 两个分支的**唯一**差别见 resolveScorerMode。
+    // qGrams 只在 bm25 模式下构造：BM25 要按 gram 文本查 idf 与块内词频，而 qvec 里只剩
+    // hash（拿不回 idf），故两条路径的查询表示天然不同，不必强行统一。
+    const bm25Ctx = (scorer === 'bm25' || scorer === 'bm25f') ? makeBm25Ctx(bm25Over, scorer) : null
+    const qGrams = bm25Ctx ? countGrams(qtext) : null
+    const scoreFn = bm25Ctx
+      ? (doc, b, qv, qt, kw, deg) => scoreBlockBm25(doc, b, qGrams, qt, kw, deg, bm25Ctx)
+      : scoreBlock
+
     // 1) 倒排候选：只遍历查询 gram 的 postings，成本 ∝ 命中量（不是全库 × 全 gram）
+    //
+    // ★ 后端分派点**只有这一处**（2026-09-29）：sqlite 后端下 postings 从库里按查询 gram 直查，
+    //   而不是从内存里的 `inverted` Map 取。两条路径的**累加公式与顺序逐字相同**
+    //   （外层＝qvec 迭代序、内层＝postings 序），故候选集与候选排序**逐位相同** ——
+    //   这是"结果逐位不变"这条验收的第一道关口（守卫：knowledge-backend-parity.test.mjs）。
+    //   降级：库读失败（锁超时/损坏）⇒ 回落 jsonl 后端并告警，绝不把异常抛进会话。
     const acc = new Map()
-    for (const [g, wq] of qvec) {
-      const e = inverted.get(g)
-      if (!e) continue
-      for (const [di, wd] of e.p) acc.set(di, (acc.get(di) || 0) + wq * wd)
+    if (backend === 'sqlite' && sqliteDb) {
+      try {
+        // ⚠️ `qvec` 是**数组** `[[hash, wq], ...]`（`vectorizeText` 返回数组，不是 Map）——
+        //    `qvec.keys()` 在这里会得到**下标** [0,1,2,…] 而静默查不到任何 postings（实测踩过：
+        //    表现是"sqlite 后端检索恒 0 命中"）。故显式折成 `Map`（`new Map(pairs)` 保序 ⇒
+        //    累加顺序仍与 jsonl 路径逐字一致），并由 knowledge-backend-parity.test.mjs 兜住。
+        //    类型注记：`vectorizeText` 的推断返回含 `never[]` 分支，不注记会让本处报 TS2769/TS2362
+        //    （把类型错误数抬高 = 放松棘轮基线，禁止）⇒ 用**局部注记**收窄，语义一字未改。
+        const qPairs = /** @type {Array<[string, number]>} */ (qvec)
+        const qWeights = new Map(qPairs)
+        for (const [di, v] of queryPostings(sqliteDb, [...qWeights.keys()], qWeights)) acc.set(di, v.score)
+      } catch (e) {
+        fallbackToJsonl(e)
+        const qPairs = /** @type {Array<[string, number]>} */ (qvec)
+        for (const [g, wq] of qPairs) {
+          const e2 = inverted.get(g)
+          if (!e2) continue
+          for (const [di, wd] of e2.p) acc.set(di, (acc.get(di) || 0) + wq * wd)
+        }
+      }
+    } else {
+      for (const [g, wq] of qvec) {
+        const e = inverted.get(g)
+        if (!e) continue
+        for (const [di, wd] of e.p) acc.set(di, (acc.get(di) || 0) + wq * wd)
+      }
     }
     let degraded = false
     let cand = [...acc.keys()]
@@ -1008,7 +1534,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       .filter((i) => matchDocQuery(docs[i], parsed))
       .map((i) => ({ i, s: acc.get(i) || 0 }))
       .sort((a, b) => b.s - a.s)
-      .slice(0, Math.max(topK * 4, 20))
+      .slice(0, Math.max(Number(candTopN) || 0, topK * 4, 20))
       .map((x) => x.i)
 
     // 降级路额外要求"内容信号"（向量或关键词）：struct 是**放大器**，不能单独造出结果。
@@ -1017,24 +1543,44 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     const isHit = (sc, score) => score > 0.001 && (!degraded || sc.cos > 0 || sc.kw > 0)
 
     // 2) 块级重排：只在候选文档内逐块打分（块级才是精度的来源）
+    //
+    // 【每篇文档贡献几块】（P1b，2026-09-18）此前是**硬编码 1**（只留 best 块）。
+    // 诊断证据（scratch/diag-rank.mjs，150 例）：topK=60 时仍有 10 例期望块找不到，
+    // 且**全部是"文档对了、块不对"**的形态（例：期望 `workflow.md#11`，返回同文档
+    // 的 `#407`）—— 而实验已排除候选池太小（20→320 全覆盖，recall 不变）。
+    // 也就是说：候选池足够大、正确块也在候选内，只是**被同一篇文档里的另一个块挤掉了**。
+    // 一篇长记忆文档（workflow.md 973KB）里有几百个块，只让其中一块出场，等于把
+    // "文档内路由"这件事整个丢了。
+    // 变量名避开同作用域已存在的 `perDoc`（idf 构建用：每篇文档一个样本，见 search 下方）
+    // **缺省 1**（保留参数但默认关闭）：实测 perDoc=2/3/5 对 recall 无改善
+    // （0.833→0.833→0.817→0.817，scratch/diag-perdoc.mjs），只让平均回执从 1207B 涨到
+    // 1518B（同文档多块挤掉其他文档的槽位）。留成参数是因为"文档内路由"这一维度仍值得
+    // 在别的语料/查询形态上复验，但**不该默认付这份成本** —— 无收益的默认值就是负债。
+    const perDocCap = Math.max(1, Number(perDoc)
+      || Number(process.env.PONOS_KNOWLEDGE_PER_DOC) || 1)
     const items = []
     for (const i of cand) {
       const doc = docs[i]
-      let best = null
-      let bestSc = null
+      const kept = []
       for (const b of doc.blocks) {
         // 块级过滤（批次 3）：`section:` / `content:` / `block:` 与否定项。
-        // 过滤掉的块不参与 best 竞争 —— 若整篇的块都被过滤掉，这篇自然进不了结果（符合预期）。
+        // 过滤掉的块不参与竞争 —— 若整篇的块都被过滤掉，这篇自然进不了结果（符合预期）。
         if (!matchBlockQuery(b, doc, parsed)) continue
         // 严格文本判定（批次 3）：**只在用户显式写了布尔逻辑时**启用（`OR` 或 `-x`）。
         // 没写时保持既有"部分命中也能召回"的打分行为不变 —— 无条件改成 AND 语义会让
         // 老查询的结果突然变少，那是行为回退而不是修 bug（见 knowledge-query.mjs 的 strict 注释）。
         if (parsed.strict && !matchTextParts(b.text, parsed)) continue
-        const sc = scoreBlock(doc, b, qvec, qtext, kws, degraded)
-        const it = toItem(doc, b, sc, mode, false)
-        if (!best || it.score > best.score) { best = it; bestSc = sc }
+        const sc = scoreFn(doc, b, qvec, qtext, kws, degraded)
+        kept.push({ sc, it: toItem(doc, b, sc, mode, false) })
       }
-      if (best && isHit(bestSc, best.score)) items.push(best)
+      if (!kept.length) continue
+      kept.sort((a, b) => b.it.score - a.it.score)
+      // `isHit` 仍以**最好的那块**判定整篇的资格（与改造前完全一致），额外块再各自判一次。
+      // perDoc=1 时这个循环只走"最好那块"、判定也相同 → **legacy 路径逐字节等价**（零回归）。
+      if (!isHit(kept[0].sc, kept[0].it.score)) continue
+      for (const k of kept.slice(0, perDocCap)) {
+        if (k === kept[0] || isHit(k.sc, k.it.score)) items.push(k.it)
+      }
     }
 
     // 3) 图扩展：已命中文档的出链目标，取 heading/entry 块参与（×0.9 折扣）
@@ -1056,7 +1602,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
           if (!matchBlockQuery(b, tdoc, parsed)) continue
           const bid = toBlockId(tdoc.id, b.n)
           if (seen.has(bid)) continue
-          const sc2 = scoreBlock(tdoc, b, qvec, qtext, kws, degraded)
+          const sc2 = scoreFn(tdoc, b, qvec, qtext, kws, degraded)
           const cand2 = toItem(tdoc, b, sc2, mode, true)
           if (isHit(sc2, cand2.score)) { seen.add(bid); items.push(cand2) }
         }
@@ -1103,7 +1649,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
         // 打分：**走既有 struct 通道由公式算**（不臆造分数）——标签命中没有正文证据，
         // 于是 cos / kw 项给 0，只让 structBoostOf 的"标签命中"权重（0.67）参与，
         // 结果 ≈ 0.15×0.67 ≈ 0.10，天生低于任何带正文证据的命中。口径与数值推导见 TAG_HIT_FLOOR。
-        const struct = structBoostOf({ block: anchor, doc, query: q, keywords: [String(hitTag)] })
+        const struct = structBoostOf({ block: anchor, doc, query: q, keywords: [String(hitTag)], tagResolver: searchTagResolver() })
         const it = toItem(doc, anchor, { cos: 0, kw: 0, struct }, mode, false)
         if (!(it.score > 0)) it.score = TAG_HIT_FLOOR
         it.tagHit = String(hitTag)                  // 消费方可据此区分"命中正文"与"命中标签"
@@ -1122,7 +1668,11 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     //    第一条无条件放入——否则预算极小时前端永远空白，用户看到"搜不到"。
     const out = []
     let used = 0
+    let skip = Math.max(0, Number(offset) || 0)
     for (const it of items) {
+      // 分页跳过发生在**预算之外**：跳过的条目不该消耗这次调用的 maxBytes，否则
+      // 翻到第 3 页时会因为"前两页的字节"而少给内容（用户会以为越翻越少是 bug）。
+      if (skip > 0) { skip -= 1; continue }
       if (out.length >= topK) break
       const bytes = Buffer.byteLength(it.snippet, 'utf-8') + 160
       if (out.length > 0 && used + bytes > maxBytes) break
@@ -1144,7 +1694,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     }
     // `...meta`（批次 3）：回给调用方"哪些算子生效、是否仅过滤、是否严格布尔"，
     // GUI 据此回显（否则用户看到结果变少却不知道是哪个算子起了作用）。
-    return { items: out, count: out.length, total, indexAge: age, degraded, ...meta }
+    return { items: out, count: out.length, total, offset: Math.max(0, Number(offset) || 0), indexAge: age, degraded, ...meta }
   }
 
   /**
@@ -1281,11 +1831,40 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * ——同一对若两个方向都算出来，保留先到的那行，结果与迭代顺序绑定但完全可复现
    * （物化要求：同一库两次重建产出同一份 related.jsonl）。
    */
+  /**
+   * 关联向量物化（2026-09-17 性能修复）。
+   *
+   * **为什么**：`buildRelations` / `relateIncremental` 对每个条目都要遍历整个空间池
+   * （N×M 次 `relatedCandidates`），而 `relatedCandidates` 内部对池里**每个**成员都调一次
+   * `vectorizeText`（切 gram + 归一化，O(文本长度)）和 `cosine`（内部 `new Map(b)`，
+   * O(向量维度)）。于是重建耗时随库体积**平方**增长：实测 experience 空间 436 条时，
+   * 全量 `reindex --force` 需 **104 秒**，远超 `kernelReadonly` 的 60s 超时——索引一过期，
+   * 面板每次请求都在重建中途被 kill，**永远建不完**（表现为知识库卡死/超时）。
+   * 而本模块的校准注释假设的库是"76 条 ≈ 5776 次"。
+   *
+   * **做法**：按**同一个 idf**给池里每个条目各向量化一次（N 次而非 N² 次），结果挂在池对象
+   * 的 `relVec`/`relVecMap` 上（`relatablePool()` 每次新建对象，不污染索引里的块）。
+   * `relatedCandidates` 见到这两个字段就直接用，没有的仍走老路现算——数学上完全等价
+   * （同一函数、同一入参），故重建产物应**逐字节一致**（有性能回归测试守着这一点）。
+   *
+   * 取值口径必须与 `relatedCandidates` 内一致：它用 `p.relContent || blockContentOf(p)`，
+   * 故只在 `relContent` 为真时物化，避免"少数缺关联文本的条目"算出不同向量。
+   */
+  function precomputeRelVecs(pool, idf) {
+    for (const p of pool) {
+      if (!p.relContent) continue
+      const v = vectorizeText(p.relContent, { tagBoost: RELATION_TAG_BOOST, idf })
+      p.relVec = v
+      p.relVecMap = new Map(v)
+    }
+  }
+
   function buildRelations() {
     if (!relateOn()) { relEdges = []; return }
     relDropped = { noShared: 0, missingEnd: 0, capped: 0 } // 本次物化的丢弃计数（见 relDropped 声明）
     const pool = relatablePool()
     const relIdf = buildRelIdf() // 关联层独立口径（按文档，见 buildRelIdf 的 why）
+    precomputeRelVecs(pool, relIdf) // 向量物化：把 N² 次切词降为 N 次（见该函数注释）
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     // 关联只在**同空间**内建立（spec 非目标：不做跨空间隐式关联）
     const bySpace = new Map()
@@ -1391,6 +1970,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 与全量路径**同一份口径**（按文档 idf）：增量若用检索那份按块 idf，同一条目在
     // 改文件前后会算出不同分数，出现"改一个文档 → 锚点分数跳变"的诡异现象（spec §13.5）
     const relIdf = buildRelIdf()
+    precomputeRelVecs(pool, relIdf) // 向量物化：本文档条目 × 空间池也是 N×M 次调用
     const sig = new Map(pool.map((b) => [b.blockId, blockContentSig(b)]))
     const byTag = new Map() // tag -> block[]（本次增量共用的一份内存缓存）
     for (const b of pool) {
@@ -1623,45 +2203,147 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
   }
 
   /**
+   * `spaceId/rel` 形式的 docId → 可**增量插入**的新文档目标（空间 + 归一化相对路径 + 绝对路径）。
+   *
+   * 为什么需要：`updateDoc` 原先只认已在索引里的 docId —— 新蒸馏文档落盘后必须先全量重建
+   * 才能更新，而真实库重建实测 30-40 s，直接越过前端 30 s 写超时（用户看到的"蒸馏超时"）。
+   * 现在由写入方给出 docId，内核解析出空间与磁盘路径后增量插入，与新文档大小无关。
+   *
+   * 路径校验与读侧 listTree 同口径（拒绝对路径 / 盘符 / `.` `..` 段），解析后再确认仍在
+   * 空间根内：docId 来自 HTTP 写入路由（那边已校验），但内核是独立可调用面，不能只信上游。
+   */
+  function newDocTargetOf(docId) {
+    const id = String(docId || '')
+    const space = spaces.find((s) => id.startsWith(`${s.id}/`))
+    if (!space) return null
+    const rel = id.slice(space.id.length + 1)
+    if (!rel || rel.includes('\\') || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel)) return null
+    const segs = rel.split('/')
+    if (segs.some((s) => !s || s === '.' || s === '..')) return null
+    const root = resolvePath(space.root)
+    const abs = resolvePath(root, ...segs)
+    if (abs !== root && !abs.startsWith(root + sep)) return null
+    return { space, rel, abs }
+  }
+
+  /**
    * 增量更新单个文档（唯一写入口仍是 persist()）。
    * **docIdx 必须保持不变**：原地替换 `docs[i]` + 摘除该 `di` 的 postings 后重插。
    * 若改成"删了重加"，其后所有文档下标位移，`inverted.jsonl` 立即失效。
+   * **新文档（docId 不在索引里）**：按 docId 解析出路径后**追加**到 docs 尾部（docIdx 只增
+   * 不减，既有下标不动），见 newDocTargetOf 的 why。
    *
    * 已知取舍：idf 不重算（单文档更新不重扫全库；idf 漂移量级远小于检索排序噪声，
    * 需要精确时走 load({force:true}) 全量重建）。同步函数——`await` 非 Promise 值合法。
    */
   function updateDoc(docId) {
-    const i = docs.findIndex((d) => d.id === docId)
-    if (i < 0) return { updated: false, reason: 'not-found' }
-    const doc = docs[i]
-    const abs = absPathOf(doc)
-    if (!abs || !existsSync(abs)) return { updated: false, reason: 'file-missing' }
-    const space = spaces.find((s) => s.id === doc.spaceId)
+    let i = docs.findIndex((d) => d.id === docId)
+    const isNew = i < 0
+    let target = null
+    let doc = null
+    if (isNew) {
+      target = newDocTargetOf(docId)
+      if (!target) return { updated: false, reason: 'not-found' }
+      doc = { id: docId, spaceId: target.space.id, rel: target.rel }
+      i = docs.length
+    } else {
+      doc = docs[i]
+    }
+    const abs = target ? target.abs : absPathOf(doc)
+    // 索引里没有 + 磁盘也没有 ⇒ 保持旧语义 `not-found`（调用方据此区分"文档不存在"与
+    // "文档存在但文件被外部删除"——后者是已索引文档的 `file-missing`）。
+    if (!abs || !existsSync(abs)) return { updated: false, reason: isNew ? 'not-found' : 'file-missing' }
+    const space = target ? target.space : spaces.find((s) => s.id === doc.spaceId)
     let parsed
     try { parsed = parseDocFile({ absPath: abs, space, relPath: doc.rel }) } catch { return { updated: false, reason: 'parse-error' } }
-    capBlocks(parsed.doc)
-    docs[i] = parsed.doc
-    docsGen += 1 // 原地替换也算新代数（见 docsGen 声明处的 why）
+    // 全量索引该文档的**全部**块（2026-09-30 裁决：无块数上限；此处原先会 `capBlocks` 截尾部，
+    // 那会让"编辑过的文档"与"全量重建的文档"块集不同 —— 静默分裂，故一并删除）。
+    // ★ sqlite 后端（2026-09-29）：把"旧块算出的 gram 集合"留一张快照 —— 它就是该文档在
+    //   库里的 postings 键集合（见 upsertDocInTx 的 why），**不必全表扫**就能精确摘除旧行。
+    const oldBlocks = isNew ? [] : (doc.blocks || [])
+    if (isNew) docs.push(parsed.doc)
+    else docs[i] = parsed.doc
+    docsGen += 1 // 原地替换/追加也算新代数（见 docsGen 声明处的 why）
 
-    // 该文档的全部 postings 重算：先从既有倒排中摘除 di === i，再按新块重新插入。
-    // df 用"该 gram 覆盖的文档数"（块级 posting 可能同文档多条，故去重后计数）。
-    for (const [g, e] of [...inverted]) {
-      const p = e.p.filter(([di]) => di !== i)
-      if (!p.length) inverted.delete(g)
-      else { e.p = p; e.df = new Set(p.map(([di]) => di)).size }
-    }
+    // 该文档的全部 postings 重算。**同一份新 postings 供两条后端使用**（口径只有一处）：
+    //  · jsonl：从内存 `inverted` 摘除 di === i 后重插（下面那个循环）；
+    //  · sqlite：交给 upsertDocInTx 在**单事务**里摘旧行 + 插新行（不物化倒排到内存）。
+    /** @type {Array<{ g: string, w: number }>} */
+    const newPostings = []
     const touched = new Set()
     for (const b of parsed.doc.blocks) {
       // 增量路必须与全量构建同口径（indexTextOf）：否则同一个库"改过一个文件"后，
       // 被改文档的 postings 与其余文档口径不同，检索排序会随"是否增量过"漂移，
       // 且下次全量重建结果又不一致（幂等性被打破）。
-      for (const [g, w] of vectorizeText(indexTextOf(b), { tagBoost: blockTagBoost(b), idf })) {
-        const e = inverted.get(g) || { g, df: 0, p: [] }
-        if (!e.p.some(([di]) => di === i)) e.df += 1
-        e.p.push([i, Math.round(w * 10000) / 10000])
-        inverted.set(g, e)
+      for (const [g, w] of /** @type {Array<[string, number]>} */ (vectorizeText(indexTextOf(b), { tagBoost: blockTagBoost(b), idf }))) {
+        newPostings.push({ g, w: Math.round(w * 10000) / 10000 })
         touched.add(g)
       }
+    }
+    if (backend === 'sqlite' && sqliteDb) {
+      // SQLite：事务增量写（只动本文档的行与它自己的 postings；**不重写 26 MB jsonl**）。
+      // 先算旧 gram（用**替换前**的块，与库里的 postings 同源），再交给后端模块落库。
+      const oldGrams = new Set()
+      for (const b of oldBlocks) for (const g of countGrams(indexTextOf(b)).keys()) oldGrams.add(g)
+      // 同一个时间戳写库与写内存：分两次 `new Date()` 会让 `stats().builtAt` 与库里的
+      // `meta.builtAt` 差几毫秒 ⇒ "增量后加载有没有触发重建"这件事再也判不准（实测踩过）。
+      const now = new Date().toISOString()
+      try {
+        upsertDocInTx(sqliteDb, {
+          docIdx: i, doc: parsed.doc, blocks: parsed.doc.blocks,
+          invertedRows: newPostings, oldGrams: [...oldGrams],
+          file: { size: parsed.doc.size, mtime: parsed.doc.mtime, hash: parsed.doc.hash },
+          builtAt: now,
+          nBlocksDelta: parsed.doc.blocks.length - oldBlocks.length,
+          // 新文档要同步 meta.docCount（loadMeta 的 stats/spaces 直接读它；不更新会让
+          // "插入后的文档数"比磁盘少 1，直到下一次全量重建才修正）。
+          docCountDelta: isNew ? 1 : 0,
+        })
+      } catch (e) {
+        // 写库失败（锁超时/磁盘满）⇒ 回落 jsonl 写路径（下面 persist 会写盘），
+        // 不把异常抛进会话（对齐"检索/写入故障不阻断会话"纪律）。
+        console.warn(`[knowledge] sqlite 增量写失败，回落 jsonl：${e?.message || String(e)}`)
+        fallbackToJsonl(e)
+      }
+      if (backend === 'sqlite') {
+        // 内存态的增量维护：`inverted` 只在被 getInverted() 物化过时才需要同步
+        // （sqlite 检索走库，不走内存）；links 与 related 与后端无关，照旧更新。
+        if (inverted.size) {
+          for (const [g, e] of [...inverted]) {
+            const p = e.p.filter(([di]) => di !== i)
+            if (!p.length) inverted.delete(g)
+            else { e.p = p; e.df = new Set(p.map(([di]) => di)).size }
+          }
+          for (const { g, w } of newPostings) {
+            const e = inverted.get(g) || { g, df: 0, p: [] }
+            if (!e.p.some(([di]) => di === i)) e.df += 1
+            e.p.push([i, w])
+            inverted.set(g, e)
+          }
+          for (const g of touched) inverted.get(g).p.sort((a, b) => a[0] - b[0])
+        }
+        lastFiles[parsed.doc.id] = { size: parsed.doc.size, mtime: parsed.doc.mtime, hash: parsed.doc.hash }
+        relinkDoc(parsed.doc, new Set(docs.map((d) => d.id)))
+        relateIncremental(docId)
+        builtAt = now
+        // ⚠️ **不调 persist()**：那是"整体重写 26 MB 索引"的路径，正是本次要省掉的一项。
+        //    代价（**如实记账**）：`docs.jsonl`/`inverted.jsonl` 会停在旧内容上。这**不影响正确性**
+        //    —— 它们只是"重建源与回退源"，而 `indexStale()`/`loadIndexFromDisk()` 的行数指纹与
+        //    per-file 指纹都会在下次以 jsonl 加载时判定"真源已变"并触发重建（实测见
+        //    knowledge-backend-recovery.test.mjs 的"改动必须真的生效"用例：新建 store 仍能搜到新词）。
+        return { updated: true, ...(isNew ? { added: true } : {}) }
+      }
+    }
+    for (const [g, e] of [...inverted]) {
+      const p = e.p.filter(([di]) => di !== i)
+      if (!p.length) inverted.delete(g)
+      else { e.p = p; e.df = new Set(p.map(([di]) => di)).size }
+    }
+    for (const { g, w } of newPostings) {
+      const e = inverted.get(g) || { g, df: 0, p: [] }
+      if (!e.p.some(([di]) => di === i)) e.df += 1
+      e.p.push([i, w])
+      inverted.set(g, e)
     }
     // postings 保持 docIdx 升序（与全量构建、检索候选累加的顺序假设一致）
     for (const g of touched) inverted.get(g).p.sort((a, b) => a[0] - b[0])
@@ -1671,7 +2353,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 且在 persist() 之前（persist 是唯一写入口，relLines 由它回写）。
     relateIncremental(docId)
     persist()
-    return { updated: true }
+    return { updated: true, ...(isNew ? { added: true } : {}) }
   }
 
   function getDoc(docId) { return docs.find((d) => d.id === docId) || null }
@@ -1692,6 +2374,9 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * `?path=../secret` 能列出空间根**之外**的目录内容（实测可读到兄弟空间的 .md 文件名）。
    * "只是读、不算漏洞"是错的——文件名本身就是信息（空间划分、他人笔记标题）。
    * 故此处拒绝绝对路径与任何 `.`/`..` 段，与写侧保持同一套判定，不做例外。
+   */
+  /**
+   * @param {{ space?: any, path?: string }} [opts]
    */
   function listTree({ space, path = '' } = {}) {
     const sp = spaces.find((s) => s.id === space)
@@ -2008,7 +2693,7 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
    * 必须**重新发现空间**：删整库/还原整库会改变 `spaces` 集合本身（不是只有文档变了）。
    */
   function refreshAfterMutation() {
-    spaces = discoverSpaces({ configDir, root: kroot })
+    spaces = discoverSpaces({ configDir, root: kroot, extraSpaceSpecs })
     buildIndex()
   }
 
@@ -2316,11 +3001,78 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
      * 的 run() 是同步契约；同时 `await store.load()` 对非 Promise 值依然合法，
      * 故调用方可自由书写（Task 7-9 的测试即如此）。
      */
-    load({ force = false, spaces: injected = null } = {}) {
-      spaces = injected || discoverSpaces({ configDir, root: kroot })
+    load({ force = false, spaces: injected = null, skipStaleCheck = false } = {}) {
+      metaBlockCount = null // 全量加载 ⇒ 块真在内存里，lite 计数作废（两条路径只有一个口径）
+      spaces = injected || discoverSpaces({ configDir, root: kroot, extraSpaceSpecs })
+      // 后端每次 load 重新判定（配置可改 ⇒ 回退演练"改配置即换后端"，spec §8.7）
+      backend = backendOf(configDir)
+      if (backend === 'sqlite') { loadViaSqlite({ force, skipStaleCheck }); return }
       if (force) { buildIndex(); return }
       const ok = loadIndexFromDisk()
-      if (!ok || indexStale()) buildIndex()
+      if (!ok || (!skipStaleCheck && indexStale())) buildIndex()
+    },
+    /**
+     * **轻量加载**：只解析空间元数据 + 文档元数据（sqlite `docs` 表，几百行），**不读块表**
+     * （实测 110,151 行 ≈ 1.4 s，是 `load()` 里最贵的一段）。
+     *
+     * 给谁用：`spaces` / `stats` / `tree` —— 这三个 op 完全不看块内容，只需要
+     * "有哪些空间、各有多少篇、总共多少块"。改前它们对**每个 HTTP 请求**都付一次全量
+     * `load()`（`kernel/knowledge-cli.mjs` 对所有 op 无条件调它），实测四路由
+     * spaces 2.71 s / stats 2.80 s / tree 2.59 s；而且**预热带不动它**——每个请求都是
+     * 新起的子进程，预热只让"那一秒"变快。用户"预热 50 s 后进知识库仍然卡"的根因就在这里。
+     *
+     * 与 `load()` 的差别（都是"这三个 op 用不到的东西"）：
+     * - 不读块表（`docs[i].blocks` 一律空数组，块总数改存 `metaBlockCount` = `meta.nBlocks`）；
+     * - 不跑 `PRAGMA quick_check`（`isHealthy` 实测 411 ms，全表扫 106 MB 库），改用
+     *   "meta 关键键齐全 + docs 表可读"这条廉价判据 —— 读不出来一律退回 `load()`；
+     * - 不 `loadIdf`（实测 769 ms，倒排只在 `search()` 里用），`grams` 取 `meta.invLines`。
+     *
+     * 何时退回全量 `load()`（fail-open，宁可慢也不给错数，与 `isHealthy` 的 fail-closed 同向）：
+     * 后端是 jsonl（那条路径本来就是"读文件即全部"，省不出多少）、库不存在、meta 残缺。
+     */
+    loadMeta({ spaces: injected = null } = {}) {
+      spaces = injected || discoverSpaces({ configDir, root: kroot, extraSpaceSpecs })
+      backend = backendOf(configDir)
+      if (backend !== 'sqlite') return this.load({})
+      const target = dbPathOf(configDir)
+      if (!existsSync(target)) return this.load({})
+      /** @type {{ db: any, close: () => void } | null} */
+      let h = null
+      try {
+        h = openIndex(target)
+        const meta = readMeta(h.db)
+        // 廉价健康判据（替代 isHealthy 的 quick_check，见方法注释）：关键键缺一个或类型不对
+        // ⇒ 残库 / 半迁移 ⇒ 交回全量路径（那边会 fail-closed 并重建）。
+        const metaOk = meta && Number(meta.nBlocks) >= 0 && Number(meta.docCount) >= 0 && meta.builtAt
+        if (!metaOk) {
+          try { h.close() } catch { /* 关库失败不影响主流程 */ }
+          return this.load({})
+        }
+        // 先关旧句柄再采纳新库（与 loadViaSqlite 的 dropSqlite 同义：防句柄泄漏）
+        if (sqliteClose) { try { sqliteClose() } catch { /* 同上 */ } }
+        sqliteDb = null
+        sqliteClose = null
+        docs = loadDocs(h.db).map((m) => ({ ...m, blocks: [] }))
+        docsGen += 1 // docs 换源（库→内存）⇒ 读路径缓存失效
+        metaBlockCount = Number(meta.nBlocks) || 0
+        // 链接 / 关联 / files 与全量路径**一并采纳**：漏了不报错，但 stats 的
+        // relEdges 计数会静默变 0（见 loadViaSqlite 里那段踩坑注释，同一类坑）。
+        // 这三个都是小文件（links.jsonl 12 KB / related.jsonl 411 KB），读它们不是瓶颈。
+        lastLinkRows = readLinksFromDisk()
+        linkOut = linkOutOf(lastLinkRows)
+        relEdges = relateOn() ? readRelatedFromDisk() : []
+        lastFiles = loadFiles(h.db)
+        builtAt = meta.builtAt || null
+        gramCount = Number(meta.invLines) || 0
+        indexBytes = indexBytesOnDisk(target)
+        lastTruncation = null
+        sqliteDb = h.db
+        sqliteClose = h.close
+        h = null
+      } catch {
+        try { h?.close() } catch { /* ignore */ }
+        return this.load({})
+      }
     },
     getSpaces() {
       const count = {}
@@ -2336,7 +3088,8 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     // 删除管理（回收站，2026-09-14）：CLI/路由/agent 工具的**唯一**入口面。
     // 四个写方法都只做"搬文件 + 记台账"，物理删除仅存在于 purge 一支。
     deleteDoc, deleteSpace, listTrash, restore, purge, stashDoc,
-    /** 删除权限查询（GUI 用它决定要不要画删除按钮，避免"点了才报错"）。 */
+    /** 删除权限查询（GUI 用它决定要不要画删除按钮，避免"点了才报错"）。
+     * @param {{ space?: any, whole?: boolean }} [opts] */
     canDelete({ space, whole = false } = {}) {
       const g = deleteGate(space, { whole })
       return g.ok ? { ok: true } : { ok: false, error: g.error, message: g.message }
@@ -2356,12 +3109,19 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
      * 渲染与判断；`single` 标记"只被一篇文档用到的标签"——它是标签体系腐烂的第一信号
      * （S5.1 实测：单例标签越积越多 → 条目孤立），所以显式给出，别让调用方自己数。
      */
-    listIndexTags({ spaces: only = null } = {}) {
+    listIndexTags({ spaces: only = null, tagResolver = null } = {}) {
       const allow = Array.isArray(only) && only.length ? new Set(only) : null
       const byTag = new Map()
       for (const d of docs) {
         if (allow && !allow.has(d.spaceId)) continue
-        for (const t of d.tags || []) {
+        for (const raw of d.tags || []) {
+          // 【S2-D6 标签实体化】先把裸字符串按"标签注册表"解析成规范名再计数：被合并掉的写法
+          // （别名）会折叠到同一实体上，于是"财务 / 财务部"合并后**只剩一行计数**，而不是看起来
+          // 仍有两个标签。`tagResolver` 缺省 null ⇒ 与今日行为**逐字一致**（零回归）；
+          // 未注册标签原样通过（§6.2 D6 明示不做强制受控词表）。
+          // 为什么在**读取聚合面**解析而不改写 `doc.tags`：改索引内容就必须 bump INDEX_VERSION
+          // ⇒ 强制全库重建 + 把用户文件里的标签悄悄改写（不可逆）。读取面解析零重建、零改写。
+          const t = (tagResolver ? tagResolver(raw) : null) || raw
           const cur = byTag.get(t)
           if (cur) { cur.count += 1; if (cur.spaceId !== d.spaceId) cur.spaceId = null }
           else byTag.set(t, { tag: t, count: 1, spaceId: d.spaceId })
@@ -2386,7 +3146,39 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
     listMentions,
     listBrokenLinks,
     getIdf() { return idf },
-    getInverted() { return inverted },
+    /**
+     * 生效的索引存储后端（`'jsonl'` | `'sqlite'`）。
+     *
+     * 为什么必须有这个读取口（而不是让调用方读 `config.json` 自己推）：`load()` 会在
+     * **运行期降级**（库不可用时回落 jsonl 并告警），此时"配置写的"与"实际走的"不一致 ——
+     * 只看配置的消费方会以为跑的是 sqlite。更关键的是**测试**：没有它，"sqlite 后端"的守卫
+     * 可能在"静默回落成 jsonl"的情况下照样全绿（实测踩过：漏一个 import ⇒ 迁移抛错 ⇒ 回落 ⇒
+     * 三条 parity 断言全绿而什么都没验证）。
+     */
+    getBackend() { return backend },
+    /**
+     * 内存里的倒排（`gramHash -> { g, df, p }`）。
+     *
+     * ★ sqlite 后端下**惰性物化**（2026-09-29 实测踩坑后补）：该后端在检索热路径上刻意不倒排
+     * 物化（那正是它的收益来源，见 loadViaSqlite 注释），但**既有消费方依赖这个读取口**——
+     * `scripts/eval-retrieval.mjs` 用它挑"稀有块 gram"构造金标集、`kernel-tests/knowledge.test.mjs`
+     * 直接断言它的形状。实测：若此处返回空 Map，量尺的"倒排覆盖"掉到 0.0%、用例数 204→54、
+     * 负例假阳性 0%→16.7% —— 量尺**静默失真**（比检索变慢严重得多：它抽掉了"有没有退化"的判据）。
+     * 故首次访问时从库一次性读入并缓存（实测 14.6 万行 0.4–0.6 s，只付一次）；
+     * **热路径（load/search）不调它**，故正常检索与冷启动不受影响。
+     */
+    getInverted() {
+      if (backend === 'sqlite' && sqliteDb && inverted.size === 0) {
+        try {
+          inverted = loadInverted(sqliteDb)
+        } catch (e) {
+          // 读不出来就回落 jsonl（与检索路径同一纪律：故障不抛给会话），并告警说明为何是空的
+          console.warn(`[knowledge] getInverted(): sqlite 读取失败，回落 jsonl：${e?.message || String(e)}`)
+          fallbackToJsonl(e)
+        }
+      }
+      return inverted
+    },
     getLinkOut() { return linkOut },
     /** `knowledgeRelateMode` 的生效值（'on'|'off'）——Task 6/10 的读写口都以此为准 */
     getRelateMode() { return _relateMode },
@@ -2408,27 +3200,33 @@ export function createKnowledgeStore({ configDir, root = null, relateMode = null
       }
       return {
         version: INDEX_VERSION, docs: docs.length,
-        blocks: docs.reduce((s, d) => s + d.blocks.length, 0),
-        grams: inverted.size, spaces: spaces.length,
+        // `metaBlockCount` 非 null = 走了 `loadMeta()`（块没进内存）⇒ 用库里的权威计数；
+        // null = 块真在内存里，按实际求和。两条路径同一口径，别把 `??` 写反。
+        blocks: metaBlockCount ?? docs.reduce((s, d) => s + (d.blocks?.length || 0), 0),
+        // `grams` = 倒排行数。sqlite 后端不倒排物化 ⇒ 取 `meta.invLines`（`gramCount`）；
+        // jsonl 后端仍是内存 Map 的 size（逐字不变）。
+        grams: gramCount || inverted.size, spaces: spaces.length,
         builtAt, indexAgeMs: builtAt ? Date.now() - Date.parse(builtAt) : null,
         indexBytes,
         // S3 §6：检索耗时分布（进程内样本；跨进程见 .index/metrics.json）
         search: { count: sorted.length, elapsedP50: pct(sorted, 0.5), elapsedP95: pct(sorted, 0.95) },
         // off 模式恒为全 0（relEdges 为空）：字段形状保持稳定，消费方不必分支
         related: { ...rc, dropped: relDropped.noShared + relDropped.missingEnd + relDropped.capped },
-        // S6：块上限护栏的留痕。`docs > 0` 表示**有文档的尾部块没进索引**（文件里仍在，
-        // 但检索/关联/图谱都看不到）—— 这是必须被看见的信号，不是内部细节。
-        blocksTruncated: { docs: blockCaps.docs, droppedBlocks: blockCaps.droppedBlocks, docIds: [...blockCaps.docIds] },
-        // 文件数上限留痕（批次 4）：`truncated: true` = 该空间还有文档**没进索引**
-        // （超过 FILE_LIMIT_PER_SPACE）。旧实现静默停手，用户只看到"索引成功"。
+        // 块截断留痕（S6）。★ 2026-09-30 裁决：**块数无上限** ⇒ 本项恒为零值
+        //（`capBlocks` 已删除）。字段形状保留：GUI/消费方不必分支，且它仍是"若将来有人
+        // 重新引入丢弃式限流，必须从这里报出来"的通道（`docs > 0` = 真有文档的块没进索引）。
+        blocksTruncated: { docs: 0, droppedBlocks: 0, docIds: [] },
+        // 文件数留痕（批次 4）。★ 同上：内核不设文件数上限 ⇒ 恒为未截断，`limit: null`
+        //（null = **无上限**，不是"上限等于 null"）。原先打的是 5000 篇/空间，
+        // 那句"知识库不做上限约束"的裁决正是针对它（2026-09-30）。
         filesTruncated: lastTruncation
           ? {
             truncated: lastTruncation.truncated === true,
-            limit: lastTruncation.limit ?? FILE_LIMIT_PER_SPACE,
+            limit: lastTruncation.limit ?? null,
             spaces: lastTruncation.spaces ?? [],
             staleSweepSkipped: lastTruncation.staleSweepSkipped === true,
           }
-          : { truncated: false, limit: FILE_LIMIT_PER_SPACE, spaces: [], staleSweepSkipped: false },
+          : { truncated: false, limit: null, spaces: [], staleSweepSkipped: false },
       }
     },
   }

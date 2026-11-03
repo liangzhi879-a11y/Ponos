@@ -242,6 +242,10 @@ export function evalCondition(cond, vars) {
 // 目录形态：<root>/<id>/workflow.yml（与 SKILL.md 平级可同名配对）
 // 平铺形态：<root>/<id>.yml（仅独立工作流，不与 skill 配对）
 
+/**
+ * 发现单个根下的工作流（目录形态 + 平铺形态，与 skills.mjs 同构）。
+ * @param {{ root?: string }} [opts]
+ */
 export function discoverWorkflows({ root } = {}) {
   if (!root || !existsSync(root)) return []
   let entries = []
@@ -289,6 +293,9 @@ export function discoverWorkflows({ root } = {}) {
       // DSL v2：GUI 列表/工具池需要的能力声明 + 版本/旧格式标记
       expose: parsed.expose || {},
       permissions: parsed.permissions || {},
+      // 编排面声明（2026-10-07 编排扩展）：presence = 可作为编排被选择（D16）。原样透传——
+      // 本函数是列表入口、不做语义解析/校验（既有纪律，校验收口在 validateWorkflow）。
+      orchestrate: parsed.orchestrate || {},
       dslVersion: DSL_VERSION,
       legacy: !Array.isArray(parsed.edges),
     })
@@ -308,20 +315,45 @@ export function discoverWorkflowsAll({ roots = [] } = {}) {
   return out
 }
 
-// 自动触发匹配：用户消息文本命中 auto_trigger 工作流的任一触发词（子串匹配）。
-// 触发词长度 >= 2 防单字误触；按 workflows 顺序返回第一个命中的工作流。
-export function matchAutoTrigger(workflows, text) {
-  if (!text || !Array.isArray(workflows)) return null
-  for (const w of workflows) {
-    if (w.autoTrigger !== true) continue
+// 自动触发匹配：用户消息文本命中列表项的任一触发词（子串匹配）。
+// 触发词长度 >= 2 防单字误触；按列表顺序返回第一个命中的元素。
+// requireFlag=true（默认）＝只认 autoTrigger === true 的项 —— 工作流的既有语义，**勿改默认**。
+//   （实测口径，2026-09-26：把默认改成 false 时 workflow-engine.test.mjs **不会红** —— 它只断言
+//    "有 auto_trigger 能命中"与"无关文本不命中"，并没有"无 auto_trigger 的项不得命中"的负向用例。
+//    该负向面由 kernel-tests/skill-auto-trigger.test.mjs 第 1 条锁定，改默认必红。）
+// requireFlag=false ＝允许**没有**该字段的项（技能对象即此形态，见 kernel/skills.mjs:75-87，
+//   技能没有 autoTrigger 字段；S1.4 技能自动触达通道用它），但显式 autoTrigger === false
+//   仍要尊重（跳过）——"显式关掉"不得因为放宽谓词而失效。
+export function matchAutoTrigger(list, text, { requireFlag = true } = {}) {
+  if (!text || !Array.isArray(list)) return null
+  for (const w of list) {
+    if (requireFlag && w.autoTrigger !== true) continue
+    if (!requireFlag && w.autoTrigger === false) continue
     const trigs = (w.triggers || []).map((t) => String(t).trim()).filter((t) => t.length >= 2)
     if (trigs.some((t) => text.includes(t))) return w
   }
   return null
 }
 
+/**
+ * 工作流 id 白名单：它会被拼进 `join(root, id, …)` 与 `/wf/run/<id>`。
+ * ★ id 完全来自外部（HTTP 路径、Workflow 工具入参、CLI）：不校验时 `../../../x` 会读到工作区外的
+ *   `x/workflow.yml` 并**执行**它（同仓 `normalizeAtlasScope`、`knowledge-import#validateSpaceId`
+ *   对同类入参已有先例）。只允许单段名（中英文/数字/`._-`），且不许含 `..`。
+ */
+const WORKFLOW_ID_RE = /^[A-Za-z0-9\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5._-]{0,63}$/
+export function isValidWorkflowId(id) {
+  const s = String(id ?? '')
+  return WORKFLOW_ID_RE.test(s) && !s.includes('..')
+}
+
+/**
+ * 按 id 加载单个工作流（按 roots 顺序首个命中优先）。
+ * @param {{ roots?: string[], id?: string }} [opts]
+ */
 export function loadWorkflow({ roots = [], id } = {}) {
   if (!id) return null
+  if (!isValidWorkflowId(id)) return null // 非法 id 等价于"没有这个工作流"，不抛（调用方形状不变）
   for (const root of roots) {
     if (!root || !existsSync(root)) continue
     const dirYml = join(root, id, 'workflow.yml')
@@ -378,7 +410,12 @@ export function normalizeWorkflow(wf) {
 
 // 节点顶层「非配置」键：保持顶层，其余（prompt/code/...）收拢回 node.config。
 const NODE_META_KEYS = new Set(['id', 'type', 'label', 'position', 'retry', 'on_error', 'body', 'note'])
-const TOP_KEYS = ['name', 'description', 'version', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions']
+// 【S2-D4 归属字段】`authorId`/`workspaceId` 必须进白名单，否则会被 toModel（下方投影）与
+// serializeWorkflow（只输出已知键）**静默丢弃** —— 那比不写更糟：GUI 编辑器一存就把归属抹掉，
+// 而 D4 的整个目的正是"数据落盘时带归属，避免事后全量迁移"（spec §6.2 D4）。
+// 放在元数据键里而非 `settings:` 内：归属是记录的元数据（与 name/version 同类），塞进 settings
+// 既语义不符，也会与用户自己的 settings 抢键。
+const TOP_KEYS = ['name', 'description', 'version', 'authorId', 'workspaceId', 'triggers', 'trigger_config', 'settings', 'inputs', 'nodes', 'edges', 'expose', 'permissions', 'orchestrate']
 
 // wf（摊平后）→ 画布模型：非元数据字段收拢回 node.config。
 // 幂等：若节点已是模型形态（已带 config），则把 config 展开后重新收拢，不会丢配置。
@@ -486,7 +523,7 @@ export function serializeWorkflow(input) {
   // 早期版本用启发式判断"是否已是模型"，会静默丢掉已有 config。
   const model = toModel(input || {})
   const out = []
-  for (const k of ['name', 'description', 'version']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
+  for (const k of ['name', 'description', 'version', 'authorId', 'workspaceId']) if (model[k] !== undefined) out.push(`${k}: ${scalar(model[k])}`)
   if (model.triggers) out.push(`triggers: [${model.triggers.map(scalar).join(', ')}]`)
   out.push('trigger_config: ' + inlineObj(model.trigger_config || { manual: true }))
   if (model.settings) out.push('settings: ' + inlineObj(model.settings))
@@ -502,6 +539,9 @@ export function serializeWorkflow(input) {
   else out.push('edges: []')
   if (model.expose) out.push('expose: ' + inlineObj(model.expose))
   if (model.permissions) out.push('permissions: ' + inlineObj(model.permissions))
+  // 编排面声明（2026-10-07 编排扩展）：与 expose/permissions 同款流式输出——嵌套 limits 由
+  // flowValue 递归（往返不丢键）。presence = 可作为编排被选择；缺省（无该键）不输出。
+  if (model.orchestrate) out.push('orchestrate: ' + inlineObj(model.orchestrate))
   return out.join('\n') + '\n'
 }
 
@@ -549,6 +589,11 @@ function collectRefs(node) {
 }
 
 const LOCAL_SCOPES = new Set(['inputs', 'var', 'item', 'index', 'iter', 'root'])
+
+// expose.tool_name 合法集（发布 UX 线）：字母/数字/_/./-，首字符非数字，总长 ≤64。
+// 允许集与 MCP sanitizeMcpName（kernel/mcp.mjs:194-196）一致（含点号）；GUI 输入侧做同名
+// sanitize（src/lib/workflowModel.ts），本常量是校验真源。
+const EXPOSE_TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/
 
 export function validateWorkflow(wf) {
   const errors = []
@@ -628,6 +673,56 @@ export function validateWorkflow(wf) {
       if (!ids.has(root)) errors.push({ code: 'VAR_UNKNOWN', node: n.id, message: `节点 ${n.id} 引用未知变量 {{${ref}}}` })
       else if (!anc.has(root) && bodyOf.get(root) === bodyOf.get(n.id)) {
         errors.push({ code: 'VAR_UNREACHABLE', node: n.id, message: `节点 ${n.id} 引用非上游节点 {{${ref}}}` })
+      }
+    }
+  }
+  // 编排面声明校验（2026-10-07 编排扩展，spec §4.1）：presence = 可作为编排被选择；缺省零影响。
+  // 规则组（GUI validateLocal 镜像同一组，见 workflowModel.ts）：非对象 / display_name 非串、
+  // 空白或超长 / reply 非串 / limits 非对象 / wall_ms 非正数。段内未知键容忍（前向兼容）。
+  if (wf?.orchestrate !== undefined) {
+    const o = wf.orchestrate
+    if (o === null || typeof o !== 'object' || Array.isArray(o)) {
+      errors.push({ code: 'ORCHESTRATE_NOT_OBJECT', message: 'orchestrate 必须是对象' })
+    } else {
+      if (o.display_name !== undefined
+        && (typeof o.display_name !== 'string' || !o.display_name.trim() || o.display_name.length > 60)) {
+        errors.push({ code: 'ORCHESTRATE_BAD_DISPLAY_NAME', message: 'orchestrate.display_name 必须是 1–60 字符的字符串' })
+      }
+      if (o.reply !== undefined && (typeof o.reply !== 'string' || !o.reply.trim())) {
+        errors.push({ code: 'ORCHESTRATE_BAD_REPLY', message: 'orchestrate.reply 必须是非空字符串（finalOutput 键名）' })
+      }
+      const lim = o.limits
+      if (lim === null || (lim !== undefined && (typeof lim !== 'object' || Array.isArray(lim)))) {
+        errors.push({ code: 'ORCHESTRATE_BAD_LIMITS', message: 'orchestrate.limits 必须是对象' })
+      } else if (lim && lim.wall_ms !== undefined
+        && !(typeof lim.wall_ms === 'number' && Number.isFinite(lim.wall_ms) && lim.wall_ms > 0)) {
+        errors.push({ code: 'ORCHESTRATE_BAD_WALL_MS', message: 'orchestrate.limits.wall_ms 必须是正数（毫秒）' })
+      }
+    }
+  }
+  // 发布面声明校验（2026-10-09 发布 UX 线）：expose 三态 + 工具名。坏值的既有失败模式是
+  // **静默**（dyntools.visibilityOf 静默 null = 工具面无声消失；带非法字符的 tool_name 原样
+  // 进模型工具表）——与 ORCHESTRATE_* 同款「显式声明必须可用，否则响亮拒绝」纪律。
+  // 规则组（GUI validateLocal 镜像同一组，见 src/lib/workflowModel.ts）：
+  // 非对象 / mode 非三值（含缺省——显式声明纪律）/ bind_agents 非 string[] / tool_name
+  // 字符集（EXPOSE_TOOL_NAME_RE；非字符串同样报错，不做隐式 String 强转）/ bound 空名单
+  // （警告：谁都调不到，不拦保存）。段内未知键容忍（前向兼容）。
+  if (wf?.expose !== undefined) {
+    const e = wf.expose
+    if (e === null || typeof e !== 'object' || Array.isArray(e)) {
+      errors.push({ code: 'EXPOSE_NOT_OBJECT', message: 'expose 必须是对象（如 { mode: private | bound | public }）' })
+    } else {
+      if (!['private', 'bound', 'public'].includes(e.mode)) {
+        errors.push({ code: 'EXPOSE_BAD_MODE', message: 'expose.mode 必须是 private、bound、public 之一（当前缺失或值非法）' })
+      }
+      const bind = e.bind_agents
+      if (bind !== undefined && !(Array.isArray(bind) && bind.every((a) => typeof a === 'string'))) {
+        errors.push({ code: 'EXPOSE_BAD_BIND_AGENTS', message: 'expose.bind_agents 必须是字符串数组（agent id 列表）' })
+      } else if (e.mode === 'bound' && (!bind || bind.length === 0)) {
+        warnings.push({ code: 'EXPOSE_BOUND_NO_AGENTS', message: 'expose.mode 为 bound 但 bind_agents 为空：没有任何 agent 能调用它（选「任意会话」或补名单）' })
+      }
+      if (e.tool_name !== undefined && !(typeof e.tool_name === 'string' && EXPOSE_TOOL_NAME_RE.test(e.tool_name))) {
+        errors.push({ code: 'EXPOSE_BAD_TOOL_NAME', message: 'expose.tool_name 只能由字母/数字/_/./- 组成且不以数字开头（最长 64 字符，如 run_my_flow）' })
       }
     }
   }

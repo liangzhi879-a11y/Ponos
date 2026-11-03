@@ -19,7 +19,7 @@ import { join } from 'node:path'
 test('PONOS_CONTINUE_HEAL_MAX=0 → 截断即收尾（不续写、无事件）', async () => {
   process.env.PONOS_MOCK_TRUNCATE_CONT = '1'
   process.env.PONOS_MOCK_TRUNCATE_CONT_N = '0'
-  process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '16384'
+  process.env.PONOS_MAX_OUTPUT_TOKENS = '16384'
   const events = []
   const wire = {
     assistant: () => {}, result: () => {}, controlRequest: () => {},

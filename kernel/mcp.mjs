@@ -10,7 +10,9 @@
 //   · tools/resources/prompts 的**能力实现不在本文件**：统一走 `mcp-caps.mjs`，
 //     与 HTTP 传输共用同一份（否则每个 method 都要在两处各写一遍，改一处忘另一处）
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, mkdirSync, existsSync } from 'node:fs'
+// ★ 2026-10-18：MCP 配置落盘必须 fsync 后 rename（断电留半截 JSON ⇒ 服务器列表丢失）
+import { writeFileAtomicSync } from '../shared/atomic-write.mjs'
 import { dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createCapabilities, contentToText } from './mcp-caps.mjs'
@@ -415,12 +417,24 @@ export async function startMcpClient({ name, command, args = [], env = {}, cwd =
   const caps = createCapabilities(session, { name, onLog })
 
   // —— 握手：initialize → notifications/initialized ——
-  const init = await request('initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'ponos', version: '1.0.0' },
-  })
-  notify('notifications/initialized')
+  // ★ 失败必须**自己回收这个子进程**（2026-11-01）：调用方（mcp-tools.mjs）用 allSettled 收口，
+  //   握手抛错时它拿不到 client 句柄 ⇒ 没有 close() 可调；而"活着但不守协议"的服务器不会触发
+  //   exit 事件 ⇒ 每个握手失败都留下一个存活子进程 + 3 条 pipe（监听器把事件循环钉住），
+  //   重启内核才清。资源回收不能只挂在"成功返回的对象"上。
+  let init
+  try {
+    init = await request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'ponos', version: '1.0.0' },
+    })
+    notify('notifications/initialized')
+  } catch (e) {
+    try { child.stdin.destroy() } catch { /* 已关闭 */ }
+    try { child.kill() } catch { /* 已退出 */ }
+    session.closeWith(e instanceof Error ? e : new Error(String(e)), 'handshake-fail')
+    throw e
+  }
 
   return {
     name,
@@ -664,9 +678,11 @@ export function writeMcpServers(configPath, servers) {
   }
   try {
     mkdirSync(dirname(configPath), { recursive: true })
-    const tmp = `${configPath}.tmp`
-    writeFileSync(tmp, JSON.stringify({ ...base, servers: n.servers }, null, 2) + '\n', 'utf-8')
-    renameSync(tmp, configPath) // 原子替换：内核随时可能重读此文件，绝不能看到半截 JSON
+    // ★ 2026-10-18：改用 writeFileAtomicSync（**fsync 后再 rename**）。
+    //   原注释写着"原子替换：内核随时可能重读此文件，绝不能看到半截 JSON" —— 意图正确，
+    //   但只做 rename 不做 fsync 仍会在断电时留下**空/半截 JSON**（rename 是目录项原子，
+    //   不保证数据已落盘）。MCP 配置坏了 ⇒ 服务器列表丢失，用户要重新配。
+    writeFileAtomicSync(configPath, JSON.stringify({ ...base, servers: n.servers }, null, 2) + '\n')
     return { ok: true }
   } catch (e) {
     return { ok: false, error: `MCP 配置写入失败：${e?.message || String(e)}` }

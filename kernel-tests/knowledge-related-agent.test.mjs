@@ -10,7 +10,7 @@
 //   ⑤ **一跳不二级扩散**：造 A→B→C，查 A 只得到 B（C 绝不出现）；
 //   ⑥ 既有 query 检索行为不变（回归）。
 //
-// 隔离纪律：一律 mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw；
+// 隔离纪律：一律 mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos；
 // 全程不启 bridge、不联网（只调内核纯函数与工具注册表）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

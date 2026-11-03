@@ -5,7 +5,7 @@
 //      关联）、丢自环、按无序对去重并计 count、按在场节点过滤；
 //   ③ **默认不带 related**：图层默认关是 spec §7.5 的硬要求，既有调用方（/knowledge/graph 不带参、
 //      S2 的 deepEqual 用例）必须零变化。
-// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking。
+// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'

@@ -36,11 +36,17 @@ test('档位：normalize 落默认档且永不抛', () => {
 test('档位：全部注册工具都有确定性分类', () => {
   const got = Object.fromEntries(REGISTRY_TOOLS.map((n) => [n, classifyTool(n)]))
   assert.equal(got.Bash, 'exec')
-  for (const n of ['Read', 'Glob', 'Grep', 'MemorySearch', 'KnowledgeSearch', 'SkillSearch', 'Vision', 'OCR', 'TodoWrite']) {
+  for (const n of ['Read', 'Glob', 'Grep', 'MemorySearch', 'KnowledgeSearch', 'OCR', 'TodoWrite']) {
     assert.equal(got[n], 'read', `${n} 应为只读`)
   }
   for (const n of ['Write', 'Edit']) assert.equal(got[n], 'write', `${n} 应为写文件`)
-  for (const n of ['WebFetch', 'WebSearch']) assert.equal(got[n], 'net', `${n} 应为出网`)
+  // ★ E2 ①/Task 2 行为变更（假开关②，2026-09-26）：`Vision`（kernel/media-tools.mjs:340 真发 POST）
+  //   与 `SkillSearch`（kernel/skill-search.mjs:50 真抓 HTTP）此前被归进 read ⇒ 任何档位自动放行。
+  //   它们**真的出网**，改归 net ⇒ manual/auto 档开始询问（loose/bypass 档行为不变）。
+  //   期望值随实现订正（不是放宽断言：这里仍要求精确等于 'net'）。
+  for (const n of ['WebFetch', 'WebSearch', 'Vision', 'SkillSearch']) {
+    assert.equal(got[n], 'net', `${n} 应为出网（真发请求）`)
+  }
   for (const n of ['Agent', 'Task', 'Skill', 'Workflow', 'Browser']) assert.equal(got[n], 'agent', `${n} 应为 agent 类`)
   // 兼容名与未识别工具
   assert.equal(classifyTool('MultiEdit'), 'write')

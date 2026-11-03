@@ -39,7 +39,7 @@ test('stripInlineThink：纯思考条清洗后为空', () => {
 
 test('stripInlineThink：孤儿 </think>（无开头标签，Qwen 实测形态）删思考保正文', () => {
   assert.equal(stripInlineThink('思考文字没有开头标签</think>\n\n答案是正文。'), '答案是正文。')
-  assert.equal(stripInlineThink('The user is asking me to introduce myself.\n</think>\n\n我是 YFWorking。'), '我是 YFWorking。')
+  assert.equal(stripInlineThink('The user is asking me to introduce myself.\n</think>\n\n我是 Ponos。'), '我是 Ponos。')
 })
 
 test('stripInlineThink：孤儿 </think> 在末尾（无正文）清洗后为空', () => {

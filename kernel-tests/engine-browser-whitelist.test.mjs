@@ -110,3 +110,84 @@ test('普通浏览器失败（非白名单拦截）→ 原错误文案不变（�
     assert.match(String(tr.content), /executor 未连接/)
   } finally { env.cleanup() }
 })
+
+// ── 2026-09-17 修复：假审批与假回执（真实事故回归）────────────────────────────
+// 事故经过：agent 用浏览器预览自己生成的 HTML（file:///C:/.../mockup.html）→ 执行器拦截
+// 时 hostname 为空串 → 内核把它顶替成中文占位符「该域名」弹审批 → 用户同意 → 写入端对中文
+// 静默拒绝 → 内核仍回模型"已批准，请重试" ⇒ 重试、再弹、再同意……无限循环，用户永远打不开。
+// 修复后：这类地址**根本不弹审批**（弹了必然白弹），直接给可执行的替代途径。
+test('无 hostname 的地址（file:// 类）→ 不弹假审批，直接给替代途径（事故回归）', async () => {
+  const env = makeEnv()
+  try {
+    const resultP = env.engine.runTurn({ content: '[mock:browser]' })
+    const br = await waitFor(() => env.events.find((e) => e.type === 'br' && e.route === 'browser'))
+    assert.ok(br, '应发出 bridge_request(browser)')
+    env.engine.resolveBrowser(br.requestId, {
+      ok: false, code: 'whitelist-blocked',
+      data: { domain: '', protocol: 'file:', url: 'file:///C:/Users/x/scratch/knowledge-module-mockup.html' },
+      error: '目标域名不在白名单（默认 *.gov.cn/localhost），已拒绝导航',
+    })
+    const result = await resultP
+    assert.ok(String(result.text || '').length > 0, '轮次应正常收尾')
+    const cr = env.events.find((e) => e.type === 'control' && e.toolName === 'browser_whitelist_add')
+    assert.equal(cr, undefined, '**不得**弹审批：写入端只接受合法主机名，弹了必然白弹')
+    const tr = env.events.find((e) => e.type === 'tool-result')
+    assert.equal(tr.isError, true)
+    assert.match(String(tr.content), /无法通过/, '明确告知"加入域名白名单"这条路过不去')
+    assert.match(String(tr.content), /knowledge-module-mockup\.html/, '指出具体地址，便于用户理解发生了什么')
+    assert.match(String(tr.content), /不要重复重试/, '明确劝阻空转重试（旧行为正是在诱导重试）')
+    assert.ok(!String(tr.content).includes('该域名'), '空值顶替的中文占位符不得再出现于文案')
+  } finally { env.cleanup() }
+})
+
+test('非法主机名（同样不可加白名单）→ 不弹审批且说明原因', async () => {
+  const env = makeEnv()
+  try {
+    const resultP = env.engine.runTurn({ content: '[mock:browser]' })
+    const br = await waitFor(() => env.events.find((e) => e.type === 'br' && e.route === 'browser'))
+    env.engine.resolveBrowser(br.requestId, {
+      ok: false, code: 'whitelist-blocked',
+      data: { domain: 'bad host!', protocol: 'https:', url: 'https://bad host!/x' },
+    })
+    const result = await resultP
+    assert.ok(String(result.text || '').length > 0)
+    const cr = env.events.find((e) => e.type === 'control' && e.toolName === 'browser_whitelist_add')
+    assert.equal(cr, undefined, '非法主机名不得弹审批')
+    const tr = env.events.find((e) => e.type === 'tool-result')
+    assert.equal(tr.isError, true)
+    assert.match(String(tr.content), /无法通过/)
+    assert.match(String(tr.content), /不是合法域名/)
+  } finally { env.cleanup() }
+})
+
+test('批准但写入失败 → 如实告知，不再谎报"已批准请重试"（事故的第二半）', async () => {
+  const env = makeEnv()
+  try {
+    const resultP = env.engine.runTurn({ content: '[mock:browser]' })
+    const cr = await driveBlocked(env, 'example.com')
+    // bridge 回执带真实写盘结果 false（addBrowserWhitelist 被拒/写盘异常）
+    env.engine.resolveApproval(cr.toolUseId, { behavior: 'allow', whitelistWritten: false })
+    const result = await resultP
+    assert.ok(String(result.text || '').length > 0, '轮次应正常收尾')
+    const tr = env.events.find((e) => e.type === 'tool-result')
+    assert.equal(tr.isError, true, '写入失败必须标错误（旧实现回 isError:false 并说"请重试"）')
+    assert.match(String(tr.content), /写入白名单失败/)
+    assert.match(String(tr.content), /仍会被拦截/, '明确说明重试无效')
+    assert.ok(!String(tr.content).includes('请重试刚才的浏览器操作'), '不得再诱导模型重试')
+  } finally { env.cleanup() }
+})
+
+test('批准且写入成功（whitelistWritten=true）→ 维持"已批准请重试"', async () => {
+  const env = makeEnv()
+  try {
+    const resultP = env.engine.runTurn({ content: '[mock:browser]' })
+    const cr = await driveBlocked(env, 'fine.example')
+    env.engine.resolveApproval(cr.toolUseId, { behavior: 'allow', whitelistWritten: true })
+    const result = await resultP
+    assert.ok(String(result.text || '').length > 0)
+    const tr = env.events.find((e) => e.type === 'tool-result')
+    assert.equal(tr.isError, false)
+    assert.match(String(tr.content), /已批准将「fine\.example」加入白名单/)
+    assert.match(String(tr.content), /请重试/)
+  } finally { env.cleanup() }
+})

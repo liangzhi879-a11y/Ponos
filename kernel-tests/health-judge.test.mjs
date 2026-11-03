@@ -26,16 +26,18 @@ test('shouldJudge 纯函数：红档+开+冷却 → true；绿档/关/冷却内 
   assert.equal(shouldJudge({ tier: 'red', judgeEnabled: true, lastJudgeAt: now - 300_100, now }), true)
 })
 
-test('recordJudge：force 发 ponos_health 且带 judge 字段一次性（下次 record 不再带）', () => {
+test('recordJudge：force 发 ponos_health 且带 judge 字段一次性（下次轮末帧不再带）', () => {
   const { events, wire } = collectHealth()
   const h = createHealth({ wire, contextWindow: 200_000 })
   h.recordJudge({ done: true, reason: '建议继续' })
   let healthEv = events.filter((e) => e.type === 'ponos_health')
   assert.equal(healthEv.length, 1)
   assert.deepEqual(healthEv[0].judge, { done: true, reason: '建议继续' })
-  // 普通 record（tier 不变不发）→ 后续事件不残留 judge
+  // 普通 record：轮末必发一帧（2026-10-08 口径），但 judge 只随记录它的那一帧一次性带出
   h.record({ usage: { input_tokens: 100 }, compactCount: 0 })
-  assert.equal(events.filter((e) => e.type === 'ponos_health').length, 1)
+  healthEv = events.filter((e) => e.type === 'ponos_health')
+  assert.equal(healthEv.length, 2, '轮末节奏：record 必发一帧（tier 未变也发）')
+  assert.equal(healthEv[1].judge, undefined, 'judge 不得残留到后续轮末帧')
 })
 
 test('recordFailure：failures 计入 snapshotState 计分（上限 +30，tier 绿不变不发事件）', () => {

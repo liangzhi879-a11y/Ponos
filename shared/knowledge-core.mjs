@@ -416,8 +416,15 @@ export function countGrams(text) {
 
 // 归一化**前**的向量与范数（索引构建要把未归一化权重落进 postings，查询时点积才是真余弦）。
 // tagBoost 不在此处参与：它按 graph.mjs 的既有语义在归一化之后乘，见 vectorizeText。
+/**
+ * 归一化**前**的向量与范数（索引构建要把未归一化权重落进 postings，查询时点积才是真余弦）。
+ * @param {string} text
+ * @param {{ idf?: any }} [opts]
+ * @returns {{ raw: Array<[string, number]>, norm: number }} `raw` 为 `[hashLine, weight]` 二元组表
+ */
 export function vectorizeRaw(text, { idf = null } = {}) {
   const tf = countGrams(text)
+  /** @type {Array<[string, number]>} */
   const raw = []
   for (const [gram, count] of tf) {
     const w = (1 + Math.sqrt(count)) * (idf?.get(gram) ?? 1)
@@ -427,6 +434,12 @@ export function vectorizeRaw(text, { idf = null } = {}) {
   return { raw, norm }
 }
 
+/**
+ * 归一化向量（点积即余弦）。
+ * @param {string} text
+ * @param {{ tagBoost?: number, idf?: any }} [opts]
+ * @returns {Array<[string, number]>} `[hashLine, 归一化权重]` 二元组表（可供 `new Map` 直接消费）
+ */
 export function vectorizeText(text, { tagBoost = 1, idf = null } = {}) {
   const { raw, norm } = vectorizeRaw(text, { idf })
   // tagBoost 在归一化之后乘（kernel/graph.mjs 的既有测试断言依赖此顺序，勿改）
@@ -435,8 +448,11 @@ export function vectorizeText(text, { tagBoost = 1, idf = null } = {}) {
 }
 
 // 两个向量都已归一化 → 点积即余弦。参数顺序无关（都是求交）。
+// `b` 允许直接传 `Map`（2026-09-17）：关联物化的热路径是 N×N 次调用，此前每次都
+// `new Map(b)` 复制一遍（每次 O(向量维度)，总量 N²×维度），调用方预先把向量折成 Map
+// 后传进来即可免掉这份纯开销。传数组的老调用方行为**逐字节不变**。
 export function cosine(a, b) {
-  const bm = new Map(b)
+  const bm = b instanceof Map ? b : new Map(b)
   let dot = 0
   for (const [id, wa] of a) { const wb = bm.get(id); if (wb) dot += wa * wb }
   return dot
@@ -494,16 +510,59 @@ function queryTokens(q) {
 // 检索把**整串用户查询**（如 'PS表 RD表 交叉校验'）传进 query，若只做 title.includes(整串)，
 // 标题 'PS表' 永远命不中，0.15 的结构权重静默失效（Task 2 评审实测）。故保留整串判定
 // （单字符查询等旧行为不变），并追加"任一词元（≥2 字符）被标题包含即命中"。
-export function structBoostOf({ block = null, doc = null, query = '', keywords = [] } = {}) {
+export function structBoostOf({ block = null, doc = null, query = '', keywords = [], tagResolver = null } = {}) {
   const q = String(query || '').trim().toLowerCase()
-  const kws = (keywords || []).map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
+  /**
+   * 标签别名展开（EVO-06 ②a，2026-10-18）。
+   *
+   * 【为什么需要】本函数原来把 `doc.tags` 与查询词做**双向子串匹配**，两者都是**原字符串**。
+   *   于是"合并了标签，检索却按旧名漏检"——两种漏法：
+   *     · 查询说别名 A、文档标签是规范名 B ⇒ A 与 B 互不包含 ⇒ 漏
+   *     · 查询说 B、文档标签存的是别名 A ⇒ 同样互不包含 ⇒ 漏
+   *   ⇒ **两侧都要展开**，只展开查询侧只能修一半。
+   *
+   * 【为什么不改索引 / 不 bump INDEX_VERSION】索引里存的原字符串**保持不变**，
+   *   展开只发生在**查询期**（一次检索几十个词，成本可忽略）。
+   *   这是 ②a 与 ②b（标签关系边，构建期持久化产物）成本差一个量级的原因。
+   *
+   * 【三条安全约束】
+   *   ① `tagResolver` 未传 ⇒ **行为逐字不变**（既有打分语义不得被顺手改坏）；
+   *   ② resolver 抛错或返回空 ⇒ 退回原字符串（注册表坏了不该让检索失败）；
+   *   ③ 展开结果是**原集合的超集**（原值一律保留），故"未注册标签"原有的子串匹配能力不丢
+   *      —— 本仓既有语义是"不做受控词表"。
+   *
+   * @param {string[]} list
+   * @returns {string[]} 原值 + 展开值（已小写）
+   */
+  const expandAliases = (list) => {
+    const out = []
+    for (const raw of list || []) {
+      const v = String(raw).toLowerCase()
+      if (!v) continue
+      out.push(v)
+      if (typeof tagResolver !== 'function') continue
+      try {
+        const canon = tagResolver(v)
+        if (canon && typeof canon === 'string') {
+          const c = canon.toLowerCase()
+          if (c !== v) out.push(c)
+        }
+      } catch { /* 约束②：注册表不可读时静默退回原字符串 */ }
+    }
+    // 去重保序
+    return [...new Set(out)]
+  }
+  // ★ 长度过滤必须在**展开之后**：一字符别名（如 'a' → '阿里巴巴'）若先被
+  //   `length >= 2` 丢掉，就永远没机会展开（有专门测试钉住这一点）。
+  const kws = expandAliases(keywords).filter((k) => k.length >= 2)
   let s = 0
   const title = String(doc?.title || '').toLowerCase()
   if (title && q) {
     if (title.includes(q)) s = 1
     else if (queryTokens(q).some((t) => t.length >= 2 && title.includes(t))) s = 1
   }
-  const tags = (doc?.tags || []).map((t) => String(t).toLowerCase())
+  // ★ 文档标签侧同样展开（约束③：原值保留，故未注册标签的子串匹配不受影响）
+  const tags = expandAliases((doc?.tags || []).map((t) => String(t)))
   // 双向包含匹配：查询"企微"要能命中标签"企微CLI化"，反之亦然
   if (tags.length && kws.length && tags.some((t) => kws.some((k) => t.includes(k) || k.includes(t)))) {
     s = Math.max(s, 0.67)
@@ -777,14 +836,19 @@ export function parseJsonl(text) {
 }
 
 // ── 内置空间（Task 3）────────────────────────────────────────────────────
-// root 一律外挂既有目录（**物理不动**，spec §5.1）：经验文件留在 ~/.yfw/memory/personal，
+// root 一律外挂既有目录（**物理不动**，spec §5.1）：经验文件留在 ~/.ponos/memory/personal，
 // 知识库只是把它注册成一个空间——"统一为同一后端"是能力统一，不是搬迁。
 // source 取值被下游依赖：Task 5 的 collectTags 用 source==='experience'/'memory' 决定
 // 文件名是否进 tags，路由把整个 spec 透出给 GUI 区分空间来源，**改动会静默改变检索结果**。
 // 迁移（spec §12）是独立后续任务，届时只改这里三行 root。
-export function builtinSpaceSpecs(configDir) {
+//
+// 【S3-D6/团队源：opt-in 的 `extra`】团队知识空间（`team-<teamId>`，spec §7.1 要求"插在
+// builtinSpaceSpecs"）由调用方经 `extra` 传入 —— 本函数**不自己读团队配置**：一旦在这里加 IO，
+// 它就从"按目录算出清单"变成"要读磁盘状态"，会让所有既有调用点（含无 IO 的纯逻辑单测）行为漂移。
+// 不传 `extra` 时返回值与改造前**逐字一致**（零回归）。
+export function builtinSpaceSpecs(configDir, { extra = [] } = {}) {
   const base = String(configDir ?? '')
-  return [
+  const specs = [
     {
       id: 'experience', name: '个人经验',
       description: '跨会话沉淀的个人经验条目',
@@ -801,6 +865,11 @@ export function builtinSpaceSpecs(configDir) {
       root: join(base, 'memory', 'skill_experiences'), writable: true, source: 'skill_exp',
     },
   ]
+  // 追加顺序：内置在前、团队在后（团队空间由 `discoverSpaces` 按"目录存在才挂"决定是否出现）
+  for (const s of Array.isArray(extra) ? extra : []) {
+    if (s && s.id && s.root) specs.push(s)
+  }
+  return specs
 }
 
 // ── 关联锚点（S5 Task 1，spec §5/§7.1）─────────────────────────────────────
@@ -1012,7 +1081,11 @@ export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minS
   if (!from || content.length < MIN_LEN) return []
   const tfA = gramCountsOf(block, content)
   // tagBoost=RELATION_TAG_BOOST(=1)：理由见该常量上方注释（校准结论，勿改）
-  const vecA = vectorizeText(content, { tagBoost: RELATION_TAG_BOOST, idf })
+  // 预计算向量优先（2026-09-17）：关联物化对 pool 里每个成员各调本函数一次，调用方
+  // （kernel/knowledge.mjs 的 buildRelations/relateIncremental）已按同一 idf 预算好
+  // `relVec`/`relVecMap`，此处复用之；没有的（检索/注入等其它调用方、raw 块）仍现算，
+  // 数学上与预计算完全等价（同一函数、同一入参）。
+  const vecA = block.relVec || vectorizeText(content, { tagBoost: RELATION_TAG_BOOST, idf })
   const tagA = blockTagOf(block)
   const posA = posOf(block)
 
@@ -1025,7 +1098,9 @@ export function relatedCandidates(block, pool = [], { idf = null, topN = 5, minS
     // 每条边各自判参与集：**存量垃圾条目靠这里防御**（源头修复只防"新产生"，spec §9.1 两步都要）
     const pc = blockContentOf(p)
     if (pc.length < MIN_LEN) continue
-    const cos = cosine(vecA, vectorizeText(pc, { tagBoost: RELATION_TAG_BOOST, idf }))
+    // 预计算向量优先（同 vecA 的理由）：`relVecMap` 是同一向量的 Map 形态，直接喂给
+    // cosine 可免掉每次 `new Map(...)` 的复制（N² 次调用下这是最贵的一笔开销）。
+    const cos = cosine(vecA, p.relVecMap || p.relVec || vectorizeText(pc, { tagBoost: RELATION_TAG_BOOST, idf }))
     // duplicate 先判：它对"这两个是同一份东西"最有断言力，且必须独立于 related 预算（spec §5.5）
     if (cos >= DUP_COS) { dups.push({ to, why: { kind: 'duplicate', score: round4(cos) } }); continue }
     const tagB = blockTagOf(p)

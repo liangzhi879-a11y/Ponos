@@ -8,7 +8,7 @@
 //   ③ 全量构建与增量更新（updateDoc）**同一口径**，否则"改过一个文件"的库与全量重建
 //      结果不一致（幂等性被打破）。
 //
-// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {

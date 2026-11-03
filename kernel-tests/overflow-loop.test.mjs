@@ -114,6 +114,22 @@ test('溢出重试：瘦身后依旧装不下 → 收敛到可见文案 + 调用
     assert.ok(compactionStarts(events) <= 20, `摘要尝试次数应受约束，实际 ${compactionStarts(events)}`)
     assert.equal(session.compactCount(), 0)
     assert.equal(session.deriveMessages().length, before + 2, '放弃文案落 transcript，历史不被改写')
+    // 前缀缓存观测回归锁（2026-09-18 Task 3 评审 Minor-1）：本出口（overflow-compact-failed）
+    // 是**提前 return**，曾绕过迭代头与轮末两处结算 ⇒ 该轮 turnStats.cache 退化为 null。
+    // 快照按轮产出（与 PONOS_CACHE_OBS 开关无关，开关只控制 [cache] 行）⇒ 此处不得为 null。
+    // ★ 断言边界（2026-09-18 评审 Finding 1 更正叙述）：**本锁只覆盖"快照存在"这一件事，
+    //   不覆盖 engine.mjs:921 的 flushCacheObs() 调用**。已独立复核：把该调用去掉，本用例
+    //   仍全绿——因为该调用在当前夹具形态下**是空转、不可证伪**：
+    //     · 本夹具（too-big:1）里每个请求都在产出任何 chunk 之前就 400，故 pendingCacheUsage
+    //       恒为 null；实测打开 PONOS_CACHE_OBS=1 后整轮零 [cache] 行、快照 requests=0。
+    //     · 要让该调用承重，需要"同一迭代内先成功产出 usage、再由**同一个请求**抛出
+    //       context-window 400"的形态（pendingCacheUsage 只在迭代头 :517 与请求前 :595 被清，
+    //       跨迭代的成功请求必然已在下一迭代头结算掉），而 mock 的 too-big 门控在 yield 之前
+    //       就抛、when-large 又排在 tool_result 回显分支之后 ⇒ 现有夹具造不出，需新增 mock 形态
+    //       （本轮刻意不做，避免为测试改产品代码）。故此处只如实锁"快照非 null"。
+    const stats = engine.getTurnStats()
+    assert.notEqual(stats[stats.length - 1]?.cache, null, '溢出放弃轮也必须带上 cache 快照（null 说明结算点被绕过）')
+    assert.equal(typeof stats[stats.length - 1].cache, 'object')
   } finally {
     clearMock()
     rmSync(dir, { recursive: true, force: true })

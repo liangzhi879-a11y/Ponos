@@ -5,7 +5,7 @@
 > 内核以 `kernel/` 目录随应用交付，边界见 §11。
 
 ![Node](https://img.shields.io/badge/node-%E2%89%A518-3c873a)
-![Tests](https://img.shields.io/badge/tests-1083%20(1080%20pass%20%2F%203%20skip)-brightgreen)
+![Tests](https://img.shields.io/badge/tests-3068%20(3057%20pass%20%2F%2011%20skip)-brightgreen)
 ![Deps](https://img.shields.io/badge/npm%20deps-0-blueviolet)
 ![License](https://img.shields.io/badge/license-MIT-black)
 
@@ -16,25 +16,27 @@
 | 这是 | 这不是 |
 |---|---|
 | **内核与编排**：模型调用、工具执行与审批、上下文治理与压缩、会话持久化、记忆/知识库、技能、子代理、循环模式、MCP、工作流 DSL | **不含界面**：没有 Electron、没有主题/CSS、没有窗口管理 |
-| **可独立运行**：`node kernel/cli.mjs` 即可起步（TUI / 一次性 print 两种形态），不需要 GUI | **不含宿主侧工具**：屏幕读控、密码库、剪贴板、应用自控这些由宿主注入；本仓只带 21 个通用工具 |
+| **可独立运行**：`node kernel/cli.mjs` 即可起步（TUI / 一次性 print 两种形态），不需要 GUI | **不含宿主侧**：窗口、IPC 桥、打包面、渲染层这些由宿主提供；本仓只带 26 个工具（其中 `Screen` / `Vault` 的执行体由宿主注入，见 §6.1） |
 | **协议化**：stdio NDJSON 协议，可被任意宿主内嵌 | **不发安装包**：NSIS / 便携包属于应用仓 |
 | **零 npm 依赖**：只用 Node 内置模块（`node:test` / `fetch` / `crypto` …） | **不是"多模态大前端"**：视觉/OCR 能力是"调模型"，不是自带渲染器 |
 
 ## 2. 能力清单
 
-数字按本仓代码核对（2026-11-03，`main` @ `c0160fc2`）：
+数字按本仓代码核对（2026-11-03 内核线同步后）：
 
 | 能力 | 落地模块 | 核实口径 |
 |---|---|---|
-| **21 个内建工具**（文件/命令、编排、知识记忆、多模态四组，见 §6） | `kernel/tools.mjs` | `createToolRegistry({}).toolNames` 长度 21 |
+| **26 个内建工具**（文件/命令、编排、知识与记忆、多模态与网络、检索与索引、屏幕与凭据六组，见 §6） | `kernel/tools.mjs` | `createToolRegistry({}).toolNames` 长度 26 |
 | **四档审批**（默认询问 / 计划模式 / 接受编辑 / 全自动）+ 白名单 + 灾难命令硬拒 | `permissions` `approval-mode` `blacklist` `highrisk` `guards` | `docs/bridge-contract.md` §2.1「审批放行档位」+ `scripts/verify-permission-flow.mjs` |
 | **上下文治理**：压缩、注入台账、保真约束、effort 策略 | `compact` `context` `inject-ledger` `fidelity` `effort-policy` | `kernel-tests/` 同名用例 |
 | **循环模式**：`--fresh` / `--until`、轮次 profile、轮间校验、自动唤醒 | `loop` `loop-modes` `loop-profile` `loop-verify` `loop-commands` `auto-wake` | 同上 |
 | **会话与记忆**：会话持久化、记忆检索、标签、团队工作区、技能历史 | `session` `memory` `memory-search` `tag-store` `team-store` `skill-history` | 同上 |
 | **知识库**：导入（含 OCR/表格）、检索、注入、回收站 | `knowledge*`（8 个模块） | 同上 |
-| **技能系统**：目录扫描、搜索、按需加载 | `skills` `skill-dirs` `skill-search` | `scripts/verify-skill-listing.mjs` |
+| **技能系统**：目录扫描、搜索、按需加载、**草案产出**（不装不生效） | `skills` `skill-dirs` `skill-search` `skill-drafts` `skill-forge` | `scripts/verify-skill-listing.mjs` |
+| **项目索引（`ProjectAtlas`）**：按标识符/职责/关系召回，影响面分析；本地索引格式版本 `ATLAS_VERSION=6` | `atlas/`（16 个模块：`store` `query` `config` `term-index` `inject` …） | `kernel-tests/atlas-*.test.mjs`（13 个） |
+| **按需工具检索（`ToolSearch`）**：工具太多时只把精简清单放进提示，命中后再取回完整 schema | `tool-search.mjs` + `tools.mjs` 的 `deferred` 机制 | `kernel-tests/tool-search*.test.mjs` |
 | **子代理**：派发、并发约束、结构化回填 | `agents` `orchestrate` `graph` | 同上 |
-| **工作流**：DSL → DAG → 执行器（本仓自带 `workflows/spec-dev/workflow.yml`） | `workflow` `workflow-dsl` `workflow-dag` `workflow-engine` `workflow-nodes` | 同上 |
+| **工作流**：DSL → DAG → 执行器（本仓自带 `workflows/spec-dev`、`workflows/gen-review`） | `workflow` `workflow-dsl` `workflow-dag` `workflow-engine` `workflow-nodes` | 同上 |
 | **MCP**：stdio / http 客户端、能力注册 | `mcp` `mcp-caps` `mcp-http` | 同上 |
 | **可观测**：健康快照、自愈梯、成本与价格表、统计、脱敏审计 | `health` `health-snapshot` `heal-ladder` `cost` `model-prices` `stats` `redact` `audit` | 同上 |
 
@@ -42,12 +44,12 @@
 
 | 路径 | 体量 | 职责 |
 |---|---|---|
-| `kernel/` | 86 个 `.mjs` + `wire/` 5 个（共 95 个文件） | 内核全部逻辑；单层模块 + `wire/`（模型侧协议适配：anthropic/openai/usage/url/segment），入口 `cli.mjs` |
-| `kernel-tests/` | 122 个测试文件 | 内核契约与行为测试（`node --test`） |
-| `shared/` | 32 个模块（`.mjs` + `.cjs` 双份） | 内核与宿主共用的**纯逻辑**：文件安全、原子写、凭据、知识包、团队、egress、归因… |
-| `scripts/` | 13 个 | 安装（sh/ps1）、构建、测试、版本推进、技能同步、5 个专项 `verify-*` |
+| `kernel/` | 143 个 `.mjs` + `wire/` 5 个（共 147 个文件；`atlas/` 16 个） | 内核全部逻辑；单层模块 + `wire/`（模型侧协议适配：anthropic/openai/usage/url/segment）+ `atlas/`（项目索引），入口 `cli.mjs` |
+| `kernel-tests/` | 311 个测试文件（另 98 个宿主面测试不收录，见 `kernel-tests/EXCLUDED.md`） | 内核契约与行为测试（`node --test`） |
+| `shared/` | 53 个文件（`.mjs` + `.cjs` 双份） | 内核与宿主共用的**纯逻辑**：文件安全、原子写、凭据、知识包、团队、egress、归因… |
+| `scripts/` | 16 个 | 安装（sh/ps1）、构建、测试、版本推进、技能同步、5 个专项 `verify-*`、知识索引基准/召回评估、团队容器迁移 |
 | `docs/` | 63 个文件 | `architecture.md`（架构与模块地图）、`bridge-contract.md`（协议契约）、`manual/`（配置）、`production/`、`superpowers/`（设计与计划留档） |
-| `workflows/` | 1 个 | 工作流定义（`spec-dev`） |
+| `workflows/` | 2 个 | 工作流定义（`spec-dev`、`gen-review`） |
 | `version.mjs` | — | 两条版本线：`APP_VERSION`（应用线）与 `KERNEL_VERSION`（内核线，当前 `0.2`） |
 
 `kernel/` 内部按域归纳（**权威版见 `docs/architecture.md` §6 内核模块地图**）：
@@ -55,7 +57,8 @@
 - **入口与配置**：`cli` `tui` `protocol` `api` `settings` `config` `config-scan` `legacy-env-boot` `provider` `perf`
 - **主循环与上下文**：`engine` `engine-config` `context` `compact` `prompt` `inject-ledger` `fidelity` `effort-policy` `hooks` `heartbeat` `auto-wake` `loop*`
 - **工具与审批**：`tools` `dyntools` `app-tools` `permissions` `approval-mode` `blacklist` `highrisk` `guards` `gen-guards` `readonly` `untrusted` `exec-base` `process-cli` `process-hygiene` `audit` `redact` `disabled`
-- **会话、记忆、知识、技能**：`session` `memory` `memory-search` `tag-store` `team-store` `skill-history` `skill-dirs` `skills` `skill-search` `knowledge*`
+- **会话、记忆、知识、技能**：`session` `memory` `memory-search` `tag-store` `team-store` `skill-history` `skill-dirs` `skills` `skill-search` `skill-drafts` `skill-forge` `knowledge*`
+- **索引与按需工具**：`atlas/`（16 个模块）`tool-search`
 - **子代理与工作流**：`agents` `orchestrate` `graph` `workflow*`
 - **MCP 与可观测**：`mcp*` `health` `health-snapshot` `heal-ladder` `disk-write` `disk-telemetry` `file-collab` `cost` `model-prices` `stats` `log` `opportunity-mine` `trace-project` `governance-router` `app-spec` `app-naming` `app-permissions`
 
@@ -111,34 +114,40 @@ node kernel/cli.mjs --help
 可选：`CLAUDE_CONFIG_DIR`（复用既有配置目录）、`PONOS_HOME`（数据根，默认 `~/.ponos`）。
 配置来源优先级与逐项说明见 `docs/manual/kernel-config.md`（`--config` / `--skills-dir` 等命令行开关可覆盖）。
 
-## 6. 内建工具（21 个）
+## 6. 内建工具（26 个）
 
 | 组 | 工具 |
 |---|---|
 | 文件与命令 | `Read` `Write` `Edit` `Glob` `Grep` `Bash` |
-| 编排 | `Agent` `Task` `TodoWrite` `Workflow` `Skill` `SkillSearch` |
+| 编排与子代理 | `Agent` `Task` `TodoWrite` `Workflow` `Skill` `SkillSearch` |
 | 知识与记忆 | `MemorySearch` `KnowledgeSearch` `KnowledgeImport` `KnowledgeDelete` |
+| 检索与索引 | `ToolSearch` `ProjectAtlas` |
+| 技能草案 | `SkillDraft` |
 | 多模态与网络 | `WebFetch` `WebSearch` `OCR` `Vision` `Browser` |
+| 屏幕与凭据（执行体在宿主） | `Screen` `Vault` |
 
 工具 schema 是**契约面**：改动 `kernel/tools.mjs` 里的名称/参数会同时影响宿主与快照，见 §8。
 宿主还可以注入自己的工具（`kernel/app-tools.mjs` 是扩展点），本仓不包含那些工具的实现。
 
-### 6.1 本仓口径 vs 应用仓口径（2026-11-03 实测）
+### 6.1 内核侧 / 宿主侧怎么分（2026-11-03 同步后的现状）
 
-本仓 `main` 注册 **21** 个工具；应用仓的 `kernel/` 已扩到 **26** 个，多出的 5 个如下 —— 判定口径是
-**"能不能在没有界面的 Node 进程里独立跑完"**：能 → 属内核；需要 Windows 原生 / Electron 主进程能力 →
-**只把 schema 留在内核**（与 `Browser` 同构的 `ctx.*Driver` 委派），执行体留宿主。
+判据一句话：**能不能在没有界面的 Node 进程里、只依赖 `kernel/` + `shared/` 跑完**。
+能 → 整个工具进内核；需要 Windows 原生 / Electron 主进程能力 → **只把 schema 留在内核**
+（与 `Browser` 同构的 `ctx.*Driver` 委派），执行体留宿主。
 
-| 工具 | 内核侧 | 执行体 | 归属 |
+| 工具 | 内核侧（本仓有） | 执行体 | 归属 |
 |---|---|---|---|
-| `ToolSearch` | `kernel/tool-search.mjs`（纯逻辑：检索延迟加载的工具 / MCP 工具，命中后并入可用集） | 内核 | **属内核**，尚未回流本仓 |
-| `ProjectAtlas` | `kernel/atlas/{config,store,query,term-index,inject}.mjs`（本地索引，只读 fs；索引格式版本 `ATLAS_VERSION=6`） | 内核 | **属内核**，尚未回流本仓 |
-| `SkillDraft` | `kernel/skill-drafts.mjs` + `skill-forge.mjs`（产出到 `.drafts/`，不装不生效） | 内核 | **属内核**，尚未回流本仓 |
-| `Screen` | `tools.mjs` 里的 schema；`run` 委派 `ctx.screenDriver` | **宿主**：`electron/screen-executor.cjs` + `screen.ps1`（UIA / SendInput） | schema **属内核**，driver **属宿主** |
-| `Vault` | `tools.mjs` 里的 schema（含解锁校验）；`run` 委派 `ctx.vaultDriver` | **宿主**：`electron/vault.cjs`（DPAPI + AES-GCM）+ 主进程审批闸门 | schema **属内核**，driver **属宿主** |
+| `ToolSearch` | `kernel/tool-search.mjs` + `tools.mjs` 的 `deferred` 机制 | 内核 | **内核** |
+| `ProjectAtlas` | `kernel/atlas/`（16 模块，本地索引，只读 fs；索引格式 `ATLAS_VERSION=6`） | 内核 | **内核** |
+| `SkillDraft` | `kernel/skill-drafts.mjs` + `skill-forge.mjs`（写 `.drafts/`，不装不生效） | 内核 | **内核** |
+| `Screen` | `tools.mjs` 里的 schema；`run` 委派 `ctx.screenDriver` | **宿主**：`electron/screen-executor.cjs` + `screen.ps1`（UIA / SendInput） | schema 在内核，driver 在宿主 |
+| `Vault` | `tools.mjs` 里的 schema（含解锁校验）；`run` 委派 `ctx.vaultDriver` | **宿主**：`electron/vault.cjs`（DPAPI + AES-GCM）+ 主进程审批闸门 | schema 在内核，driver 在宿主 |
 
-★ 注意 `Screen` / `Vault` 不是"应用专属工具"：它们与本仓已有的 `Browser` 是同一种形态 ——
-内核声明 schema、宿主注入 driver。缺 driver 时该工具应报"不可用"，而不是让内核加载失败。
+★ 共同契约：缺 driver 时 `Screen` / `Vault` 应报**不可用**，不能让内核加载失败；`node kernel/cli.mjs`
+在无宿主环境里必须照常起步（本仓测试覆盖这一点）。
+
+★ 同步边界：**宿主面测试不进本仓**（它们 import 或读取 `electron/`、`src/`、`server/`、`dist/`、`docs/`），
+98 个这样的文件逐条记在 `kernel-tests/EXCLUDED.md`，含判据与分组；这些断言由应用仓 CI 覆盖。
 
 ## 7. 协议与契约
 
@@ -153,8 +162,11 @@ node kernel/cli.mjs --help
 node --test --test-timeout=120000 "kernel-tests/*.test.mjs" "shared/*.test.mjs"
 ```
 
-当前状态（本次实测，本仓 `main`）：**1083 例 / 1080 通过 / 3 跳过 / 0 失败**（跳过项是需要外部二进制的对拍）。
-122 个内核测试文件 + 3 个 shared 测试文件。
+当前状态（本次实测，本仓 `main`）：**3068 例 / 3057 通过 / 11 跳过 / 0 失败**
+（跳过项是需要外部二进制或特定平台的用例）。收录 311 个内核测试文件 + `shared/` 的纯逻辑测试。
+
+宿主面测试（98 个，import 或读取 `electron/`/`src/`/`server/`/`dist/`/`docs/`）**不收录**本仓，
+逐条清单与判据见 `kernel-tests/EXCLUDED.md`；这些断言由应用仓 CI 覆盖。
 
 `scripts/` 里的专项验证（都在 CI 与本地可跑）：
 
@@ -197,14 +209,14 @@ node scripts/sync-builtin-skills.mjs
 ```
 
 - **两个仓、两条版本线**：应用线在私有仓推进；本仓只推进内核线（`KERNEL_VERSION`）。
-- **宿主注入面（driver）**：内核只声明 schema，能力由宿主实现后经 `ctx` 传入 —— 已在本仓的是
-  `ctx.browserDriver`（`Browser`）；**应用仓才有**的是 `ctx.screenDriver`（`Screen`）与
-  `ctx.vaultDriver`（`Vault`）。三者的共同契约：内核侧可单独加载，缺 driver 时该工具**报不可用**而不是崩。
-- **内核线落后量（2026-11-03 实测）**：应用仓 `kernel/` 比本仓 `main` **多 52 个文件**
-  （`atlas/*`、`tool-search.mjs`、`skill-drafts.mjs`、`skill-forge.mjs`、`loop-*`、`knowledge-*` 等），
-  `kernel-tests/` 多 312 个文件、`shared/` 多 23 个；**本仓没有任何应用仓缺少的文件**（真子集）。
-  所以"把新能力搬过来"本质是**内核线同步**问题，不是"挑几个工具搬"的问题；同步时要按
-  §6.1 的判据分层（纯内核的进 `kernel/`，`app-*` 这类宿主适配的不进）。
+- **宿主注入面（driver）**：内核只声明 schema，能力由宿主实现后经 `ctx` 传入 —— 本仓现已包含
+  `Browser` / `Screen` / `Vault` 三个 schema，它们的 `ctx.browserDriver` / `ctx.screenDriver` /
+  `ctx.vaultDriver` **都在宿主**。共同契约：内核侧可单独加载，缺 driver 时该工具**报不可用**而不是崩。
+- **同步状态（2026-11-03）**：已完成一次**内核线整体同步** —— 应用仓 `kernel/`、`shared/`、
+  `workflows/gen-review`、3 个内核脚本（知识索引基准/召回评估/团队容器迁移）全部进来，
+  `tools.mjs` 取应用仓版本（26 个工具）。此后本仓**不再是应用仓的真子集之外的孤儿**，
+  而是"应用仓内核 + 内核面测试"的公开镜像；同步方向永远是 **应用仓 → 本仓**，
+  按 §6.1 判据分层：宿主面（`electron/`、`src/`、`server/`、`dist/`、`doctor/`）不进本仓。
 - **契约优先**：内核 ↔ 宿主的唯一耦合面是 `docs/bridge-contract.md`。想在本仓改动它，必须同步改文档
   并在提交信息里写明影响面。
 

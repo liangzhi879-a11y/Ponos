@@ -15,28 +15,73 @@ export const LOCAL_DEFAULT_WINDOW = 65_536
 
 // 模型窗口表（可扩展）：deepseek-v4-flash=200K / deepseek-v4-pro=1M / MiniMax-M3=256K
 export const MODEL_CONTEXT_WINDOWS = {
-  'deepseek-v4-flash': 200_000,
+  // ★ 2026-10-19 查证更新（用户 provider 正在用 deepseek-flash，实测长会话膨胀）：
+  //   依据 = DeepSeek 官方《模型 & 价格》https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+  //     模型 deepseek-flash ｜ 模型版本 DeepSeek-V4.1-Flash-1017 ｜ **上下文长度 1M**
+  //     脚注①："模型名请使用 deepseek-flash。旧模型名 deepseek-v4-flash…仍可调用，但对应模型
+  //             已下线，请求将由 DeepSeek-V4.1-Flash-1017 模型提供服务。"
+  //
+  // 为什么必须补 `deepseek-flash` 这一行（不是"顺手加个模型"）：
+  //   表没人命中 ⇒ 回落 provider 手配的 PONOS_AUTO_COMPACT_WINDOW。这条回落在**未知模型**上
+  //   是合理的（无依据时尊重用户声明），但对**已知模型**它曾造成过事故（下方注释记录的
+  //   "v4-flash 手配 1M 虚高"）。反过来同样危险：用户配的若是偏小值，表缺失会让压缩阈值
+  //   被压低 → 过度摘要。⇒ 已知模型的窗口必须是**表里的一个事实**，而不是"碰巧配对了"。
+  //
+  // 为什么 `deepseek-v4-flash` 从 200K 改成 1M（**事实变更，不是放宽判据**）：
+  //   原记的 200_000 是"下线前那个 flash"的事实。官方脚注明确说旧名现在指向 V4.1-Flash-1017
+  //   ⇒ 同一模型、同一 1M 窗口。留着 200K 会让"旧名"用户的阈值被低估 5 倍。
+  'deepseek-flash': 1_000_000,
+  'deepseek-v4-flash': 1_000_000,
   'deepseek-v4-pro': 1_000_000,
   'MiniMax-M3': 262_144,
 }
 
-// contextWindow 来源优先级：内置模型表 → CLAUDE_CODE_AUTO_COMPACT_WINDOW（bridge
-// 注入 provider 手配值）→ 画像默认（PONOS_PROVIDER_PROFILE=local → 64K 保守，
-// cloud/未知 → 200K）。
-// 2026-09-11 表优先于注入：表是模型的"事实窗口"，注入值是 provider 级声明——对
-// 已知模型以事实为准（实测 deepseek provider 手配 1M 在 v4-flash（真实 200K）上
-// 虚高 → 压缩阈值按 1M 算永不触发 → 大会话每轮全量重发 1MB 请求"切 DS 也卡"）。
-// 未知模型仍注入优先（表无依据时尊重用户声明）；带后缀模型（MiniMax-M3[1m]）不
-// 命中表条目 → 注入 1M 正常生效。
-export function contextWindowFor(model, env = process.env) {
+// contextWindow 来源优先级（2026-10-26 按**来源**重新排序，见下方 resolveContextWindowFor）：
+//   ① PONOS_PROBED_CONTEXT_WINDOW / provider.contextWindowSource==='probe'（服务端实测）
+//   ② 内置模型表（已知模型的事实窗口）
+//   ③ provider 手配值（PONOS_AUTO_COMPACT_WINDOW / provider.contextWindow）
+//   ④ 画像默认（local → 64K 保守，cloud/未知 → 200K）
+//
+// ★ 2026-09-11 的事故判据**仍然有效**：表必须压过**手配值**（实测 deepseek provider 手配
+//   1M 在 v4-flash（真实 200K）上虚高 → 压缩阈值按 1M 算永不触发 → 大会话每轮全量重发
+//   1MB 请求"切 DS 也卡"）。kernel-tests/context-window.test.mjs 把这条双向钉死
+//   （含"配小了"也以表为准），**不得反转**。
+//
+// ★ 但 2026-10-26 发现：原实现把"手配值"与"探测值"塞进**同一个** env 通道
+//   （PONOS_AUTO_COMPACT_WINDOW），于是表优先顺带把**服务端自报的事实**也吞掉了
+//   （真机：/v1/models 返回 1048576，表值 1_000_000 顶掉它 —— 差 4.6% 偏保守无害，
+//   但机制是定时炸弹：表一旦落后于服务端，用户就永远拿不到正确窗口，且无法自愈）。
+//   ⇒ 按**来源**分流：探测值另行注入 PONOS_PROBED_CONTEXT_WINDOW，权威性高于表。
+//   **这不是放宽 2026-09-11 的判据**：手配值仍然斗不过表，只有"服务端实测"斗得过。
+/**
+ * @param {{ model?: string, configured?: number, source?: string, env?: any }} [opts]
+ * @returns {number} 生效上下文窗口（token）
+ */
+export function resolveContextWindowFor({ model, configured, source, env = process.env } = {}) {
+  // ① 探测值：服务端 /v1/models 自报的事实，权威性最高
+  const probedEnv = Number(env.PONOS_PROBED_CONTEXT_WINDOW)
+  if (Number.isFinite(probedEnv) && probedEnv > 0) return probedEnv
+  const cfg = Number(configured)
+  if (source === 'probe' && Number.isFinite(cfg) && cfg > 0) return cfg
+  // ② 内置表：已知模型的"事实窗口"，压过手配值（2026-09-11 判据，勿反转）
   const byModel = MODEL_CONTEXT_WINDOWS[String(model || '')]
   if (byModel) return byModel
-  const injected = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+  // ③ 手配值：未知模型时尊重用户声明
+  if (Number.isFinite(cfg) && cfg > 0) return cfg
+  const injected = Number(env.PONOS_AUTO_COMPACT_WINDOW)
   if (Number.isFinite(injected) && injected > 0) return injected
+  // ④ 画像默认
   return env.PONOS_PROVIDER_PROFILE === 'local' ? LOCAL_DEFAULT_WINDOW : DEFAULT_WINDOW
 }
 
-// 调用时输出预算钳制（pi clampMaxTokensToContext 语义；2026-09-10 小窗口本地模型适配）：
+// 兼容入口：签名与语义保持原样（只走 env 通道，等价于 configured 未提供）。
+// ★ 启动路径与热切换必须都走这同一套优先级（热切换原先直接读 provider.contextWindow，
+//   口径与启动相反 —— 这是本次修的接缝，别再把两者写回各算各的）。
+export function contextWindowFor(model, env = process.env) {
+  return resolveContextWindowFor({ model, env })
+}
+
+// 调用时输出预算钳制（2026-09-10 小窗口本地模型适配）：
 // 每次模型调用前按 window − 输入估算 − 余量 收窄 max_tokens，保证 input+max_tokens
 // 恒 ≤ 窗口——本地小窗口模型（32K-64K）配大默认预算（64K/16K）不再必然撞 400。
 // cap 低于 floor 时返回 floor（宁可小预算尝试，也不放大请求；仍装不下由 400 自愈路径
@@ -56,9 +101,9 @@ export function clampOutputBudgetForWindow({ window, inputEst, budget, reserve =
 // 400 溢出兜底，表现为每 1-2 轮被迫压缩一次（见 zz-smoke/diag-context.mjs 复盘）。
 function densityOf(env = process.env) {
   const d = { code: 3, text: 4, cjk: 1 }
-  const code = Number(env.CLAUDE_CODE_TOKEN_DENSITY_CODE)
-  const text = Number(env.CLAUDE_CODE_TOKEN_DENSITY_TEXT)
-  const cjk = Number(env.CLAUDE_CODE_TOKEN_DENSITY_CJK)
+  const code = Number(env.PONOS_TOKEN_DENSITY_CODE)
+  const text = Number(env.PONOS_TOKEN_DENSITY_TEXT)
+  const cjk = Number(env.PONOS_TOKEN_DENSITY_CJK)
   if (Number.isFinite(code) && code > 0) d.code = code
   if (Number.isFinite(text) && text > 0) d.text = text
   if (Number.isFinite(cjk) && cjk > 0) d.cjk = cjk
@@ -133,10 +178,13 @@ function payloadText(block) {
 //    只换数组不换元素；`patchOrphanToolUses` 无孤儿时原样推原对象。故 WeakMap 键有效。
 // 2) **摘要落地是换对象而非改内容**（`appendCompactionSummary` → nodes.splice + invalidate）：
 //    旧对象不再可达 → WeakMap 条目随 GC 回收，读取方**结构性不可能**读到摘要前的历史。
-// 3) **唯一的原地改写是 compact.mjs 的两处 `b.content = …`**（`ageOutToolResults:59` /
-//    `freeShrink:199`；全仓 grep 仅此两命中，`Object.assign`/`delete` 无命中）。两处都
-//    **紧邻**调用 `bumpContentEpoch()` ⇒ 一次改写即让进程内全部估算记忆失效，可证无遗漏。
-// 另：密度系数（CLAUDE_CODE_TOKEN_DENSITY_*）进键——env 变化必须重算。
+// 3) **唯一的原地改写是 compact.mjs 的三处 `b.content = …` / `input[f] = …`**
+//    （`ageOutToolResults` 的 tool_result 标记、`freeShrink` 的裁剪、`ageOutToolUseInputs`
+//    的 Write/Edit 大 payload 标记；全仓 grep 仅此三命中，`Object.assign`/`delete` 无命中）。
+//    三处都**紧邻**调用 `bumpContentEpoch()` ⇒ 一次改写即让进程内全部估算记忆失效，可证无遗漏。
+//    ★ 2026-10-19 新增第三处时的纪律：**新增任何原地改写都必须同时 bump 并回来更新这段清单**
+//      —— 这段注释本身是"可证无遗漏"论证的组成部分，漏写就等于让论证失真。
+// 另：密度系数（PONOS_TOKEN_DENSITY_*）进键——env 变化必须重算。
 //
 // 容量：WeakMap 键是「活着的历史对象」，条目数被历史体量天然限制且随对象回收，
 // 故不需要 LRU 上限（参考实现里涨到 300MB 的是**字符串键的会话级 Map**，形状不同）。
@@ -231,9 +279,38 @@ export function estimateHistory(msgs = [], opts = {}) {
   return sum
 }
 
+// —— tools schema 计价（2026-10-26：本地小模型「首轮就撑爆」的根因修复）——
+// 病灶（真实会话实测）：请求体 = system + **tools[]** + messages，而本文件原实现的
+// `estimateRequest` 只算 system + messages ⇒ 110 个 MCP 工具的 schema（实测约 100K token，
+// 占 128K 窗口的 79%）**完全不在估算里**。后果不是"估得略低"，是**机制性失明**：
+//   · `est` 恒约 20K，永远低于阈值 104,857 ⇒ `maybeCompact` 永不触发（压缩 0 次）；
+//   · 溢出兜底压缩只能裁 messages，裁不掉 tools ⇒ 压多少次都装不下；
+//   · `clampOutputBudgetForWindow` 的 inputEst 同样漏 tools ⇒ 输出预算不收窄；
+//   · engine 的 usage 对账（reported vs est）也因 est 偏小而误判。
+// ⇒ tools 必须是**估算的一等公民**，与 system 同源计价（不得另起第二套口径）。
+//
+// 缓存：以**数组引用**为键。调用方必须"同一轮只求值一次 toolSchemas()、同一数组既发请求
+// 又做估算"才命中（每轮 miss 一次 ≈ 一次 JSON.stringify，可接受）；跨轮重建数组即重算。
+const TOOLS_CACHE = new WeakMap() // schemas 数组 → { epoch, dk, tokens }
+function toolsTokens(tools, density, dk) {
+  if (!Array.isArray(tools) || tools.length === 0) return 0
+  const hit = TOOLS_CACHE.get(tools)
+  if (dk && hit && hit.epoch === _contentEpoch && hit.dk === dk) return hit.tokens
+  let s = ''
+  try { s = JSON.stringify(tools) } catch { return 0 } // 循环引用等异常：不炸估算
+  // 按 code 密度计价（schema 是 JSON，JSON 转义后 `\n` 不是真换行 ⇒ isCodeLike 必然失效，
+  // 与 tool_use 块同款显式归类，不依赖内容嗅探）
+  const cjk = countCjk(s)
+  const tokens = Math.ceil(cjk / density.cjk) + Math.ceil((s.length - cjk) / density.code) + 4
+  if (dk) TOOLS_CACHE.set(tools, { epoch: _contentEpoch, dk, tokens })
+  return tokens
+}
+
 // 四区记账：system（顶层提示）/ task（本轮 user 输入）/ tool_result / history（其余历史）
 // 返回 { total, sections }，供 pre-step 测压与 tokenLedger 入账。
-function estimateRequestUncached({ system = '', messages = [], opts }) {
+// ★ 2026-10-26：`tools` 是**第五个真实分区**（固定前缀的一半），只增字段不改既有四键口径
+//   ——`sections` 的既有消费方（health / tokenLedger）读的是已知键，新增键对它们零影响。
+function estimateRequestUncached({ system = '', messages = [], tools = null, opts }) {
   const density = densityOf(opts?.env || process.env)
   const dk = cacheOn() ? densityKey(density) : NO_CACHE
   let task = 0
@@ -257,11 +334,13 @@ function estimateRequestUncached({ system = '', messages = [], opts }) {
   const sections = {
     // system 前缀同样走 CJK 感知计价（中文系统提示按字计，与块级口径一致）
     system: estimateTokensUncached({ type: 'text', text: String(system) }, density, dk),
+    // 工具面（schema 面）：与 system 并列的固定前缀，**必须计入 total**（见上方长注释）
+    tools: toolsTokens(tools, density, dk),
     task,
     tool_result: toolResult,
     history,
   }
-  return { total: sections.system + task + toolResult + history, sections }
+  return { total: sections.system + sections.tools + task + toolResult + history, sections }
 }
 
 // K0 观测（2026-09-13）：只统计**入口**耗时与调用次数。内部的 estimateMessage →
@@ -312,6 +391,43 @@ export function makeUsageAnchor() {
 // input 会把水位低估一个量级；非缓存端点（vLLM 等本地）缓存字段为 0，等价 input_tokens。
 export function requestTokens(u = {}) {
   return (Number(u?.input_tokens) || 0) + (Number(u?.cache_read_input_tokens) || 0) + (Number(u?.cache_creation_input_tokens) || 0)
+}
+
+// 前缀缓存观测 · 口径层（2026-09-18 spec：docs/superpowers/specs/2026-09-18-prefix-cache-observability-design.md §3.1）
+// ★ 语义修订（2026-09-18，用户裁定"从根修复"）：`supported` 的含义**已变更**——
+//   旧定义 `read + create > 0` 是**请求级**证据（"本请求命中过/写过缓存"），与它自己的
+//   设计目标（区分「端点真未命中」与「端点根本没有缓存字段」）自相矛盾：一次 read=0 既
+//   可能是"端点无缓存能力"，也可能是"端点上缓存可用但这次真未命中"，单靠数值分不出来。
+//   新定义 = **端点具备缓存计量**（是否上报缓存字段），信号来自 api.mjs 的
+//   `cache_fields_reported`（存在性在 normalizeUsage 里被保留，不再被 `?? 0` 销毁）。
+//   —— 这是**语义变更而非新增字段**：下游 `suspicious` 判定因此改为"端点有缓存但未命中"，
+//      而不是旧实现的"端点级粘性"绕过（该 hack 已随本修订删除，见 cache-observer.mjs）。
+//   兼容规则：`cache_fields_reported` **缺键**时退化为旧启发式 `read + create > 0`——
+//   手写 usage 字面量的调用方（mock 夹具、单测、旧 transcript）无该键，退化后行为与旧版
+//   完全一致（本地 vLLM 这类缓存字段恒 0 的端点依旧整体静默，spec §5「不假警」约束不破）。
+//   `reported` 与 `supported` 恒同值：前者是信号来源的显式出口，后者是既有消费点的契约名。
+//   保留两个名字是刻意的（消费方读 `supported`，诊断/断言读 `reported`），**不得只留一个**。
+// hitRatio 分母 = input + read（与 stats.mjs:62 既有 cacheRate 同口径，全仓唯一）；
+// cache_creation 不计入——写入与读取互斥，混入会让首轮写缓存显示为高命中。
+// **口径不得改**：total / hitRatio 两式与本次修订前逐字一致。
+export function cacheStats(u = {}) {
+  const input = Number(u?.input_tokens) || 0
+  const read = Number(u?.cache_read_input_tokens) || 0
+  const create = Number(u?.cache_creation_input_tokens) || 0
+  // 存在性优先：端点上报过缓存计量字段 ⇒ 具备缓存能力（即使本轮 read/create 都为 0，
+  // 那是"未命中"而非"无缓存"）。缺该键时退化为旧启发式，见上方兼容规则。
+  const reported = typeof u?.cache_fields_reported === 'boolean'
+    ? u.cache_fields_reported
+    : read + create > 0
+  return {
+    input,
+    read,
+    create,
+    total: input + read + create,
+    reported,
+    supported: reported,
+    hitRatio: input + read > 0 ? read / (input + read) : 0,
+  }
 }
 
 // —— L4-1 上下文预测：token 增长速率 → 预测到达阈值轮数 ——

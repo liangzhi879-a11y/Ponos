@@ -155,16 +155,34 @@ function incidentEnv({ writes = 24, inputBytes = 20_000, reads = 10, resultBytes
   return { events, store, context, compactor, dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('端到端：老化清除后剩余质量仍在 tool_use.input → 压缩必须落地（旧实现静默返回 aged）', async () => {
+test('端到端：事故形态的**收口不撒谎** —— 报告已收口就必须真的低于阈值，否则必须摘要', async () => {
+  // ★ 2026-10-19 重写（不是放宽，是**换成版本无关的不变量**）。
+  //   本用例原先断言"必须 summarized"，其前提是：老化只清 tool_result，而 tool_use.input
+  //   **永不被清** ⇒ 事故形态下 est 老化后仍超阈值 ⇒ 只能靠付费摘要收口。
+  //   现在 Write/Edit 的大 payload 也会被老化 ⇒ 这个夹具的 est 真的降到了阈值以下
+  //   （实测 46093 < 131904）⇒ `aged` 是**正确**答案：上下文已经小了，没有可摘要的东西，
+  //   花一次 480–600s 的摘要去压一个已经不超限的上下文是纯浪费。
+  //   ⇒ 真正要守的不变量是（两条，任一条破了都说明机制坏了）：
+  //     ① **不许撒谎**：报 aged/pruned 时，收口后的 est 必须真的 < 阈值（事故的原形就是"报了 aged，
+  //        而 est 还超着"，用户侧表现为"日志一直在收缩、实际涨到 2500 条"）；
+  //     ② **不许摆烂**：若收口后仍 ≥ 阈值，就必须继续走摘要（summarized），不得停在 aged。
+  //   这样一来，将来无论优化哪一半（tool_result / tool_use.input），本条都仍然成立。
   const env = incidentEnv()
   try {
     const msgs = env.store.deriveMessages()
-    // 与线上同口径：window 200K、输出预算 64K、余量 4K → 阈值 131,904
+    const THRESHOLD = 131_904   // 与线上同口径：window 200K、输出预算 64K、余量 4K
     const r = await env.compactor.maybeCompact({ system: 'sys', messages: msgs, outputBudget: 64_000 })
-    assert.equal(r.action, 'summarized',
-      `tool_use 载荷占比过半的会话必须触发摘要，不得以 aged/below-threshold 提前返回：${JSON.stringify(r).slice(0, 200)}`)
-    // 反证：老化确实发生过（否则本测试不构成事故形态）
-    assert.ok((r.cleared ?? 0) > 0 || r.coveredTokens > 0, '工具结果应已被老化/进入 covered')
+    const estAfter = estimateRequest({ system: 'sys', messages: msgs }).total
+    if (r.action === 'aged' || r.action === 'pruned') {
+      assert.ok(estAfter < THRESHOLD,
+        `① 不许撒谎：报 ${r.action} 时收口后 est 必须 < ${THRESHOLD}（实际 ${estAfter}）；${JSON.stringify(r).slice(0, 200)}`)
+      // 附带自证：这个"提前收口"是**收益**，不是漏摘要
+      assert.ok((r.cleared ?? 0) > 0 || (r.agedInputs ?? 0) > 0,
+        '既然降到阈值下了，就必须能说清是**什么**降的（cleared/agedInputs 至少有一个 > 0）')
+    } else {
+      assert.equal(r.action, 'summarized',
+        `② 不许摆烂：收口后仍超阈值（est=${estAfter} ≥ ${THRESHOLD}）就必须走摘要：${JSON.stringify(r).slice(0, 200)}`)
+    }
   } finally { env.cleanup() }
 })
 

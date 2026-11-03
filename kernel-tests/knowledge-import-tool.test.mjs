@@ -13,7 +13,7 @@
 //
 // 隔离纪律（spec §6）：**不启 bridge、不 spawn python、不加载 OCR 模型** —— 解析器由
 // `ctx.runDocToMd` 注入假实现（与 `ctx.browserDriver` 同一套依赖注入手法）；
-// 全部临时 configDir（mkdtempSync），真实 `~/.yfworking` / `~/.yfw` 一律不碰。
+// 全部临时 configDir（mkdtempSync），真实 `~/.ponos` / `~/.ponos` 一律不碰。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync, rmSync } from 'node:fs'

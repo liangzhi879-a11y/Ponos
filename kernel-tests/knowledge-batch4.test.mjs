@@ -79,21 +79,35 @@ test('批次4：walkMd 跳过原子写临时文件（否则保存一次就多出
   assert.deepEqual(ids, ['my-notes/a.md'], `临时文件不得进索引：${JSON.stringify(ids)}`)
 })
 
-test('批次4：文件数上限**必须出声**（manifest 留痕 + stats 报出，而不是静默少文档）', () => {
+test('批次4：文件数留痕字段在（内核无上限 ⇒ 恒未截断，且 limit 为 null）', () => {
   const { dir, store, root } = makeStore()
   const sp = join(root, 'my-notes')
-  // 上限是 5000，造不了那么多文件 → 直接用内核导出的常量校验语义不方便，
-  // 故这里用"大量文件 + 校验口径"的方式不可行；改为验证**契约字段存在且默认为未截断**，
-  // 真正的截断路径由下面的 lower-level 用例（直接调 walkMd）覆盖。
+  // ★ 2026-09-30 用户裁决「知识库不做上限约束」后内核**不设文件数上限**（原 5000 篇/空间已删）：
+  //   契约字段仍在（GUI 形状稳定），但语义从"未撞 5000 上限"变成"**根本没有上限**" ——
+  //   `limit: null` 表达的就是这件事（null = 无上限，而不是"上限等于 null"）。
+  //   真触发的截断路径只可能来自"调用方自己给 walkMd 传了有限 maxFiles"，
+  //   由下面的 lower-level 用例（直接调 walkMd）覆盖。
   writeFileSync(join(sp, 'a.md'), '# A\n', 'utf-8')
   store.load({})
   const st = store.stats()
   assert.ok(st.filesTruncated, 'stats 必须带 filesTruncated 字段（GUI 据此提示）')
   assert.equal(st.filesTruncated.truncated, false)
-  assert.equal(typeof st.filesTruncated.limit, 'number')
+  assert.equal(st.filesTruncated.limit, null, '内核已无文件数上限 ⇒ limit 必须是 null')
   // 未截断时 manifest 不留无用键（off/常态不留痕，与 relLines 同一取舍）
   const man = JSON.parse(readFileSync(join(dir, 'knowledge', '.index', 'manifest.json'), 'utf-8'))
   assert.equal(man.filesTruncated, undefined)
+})
+
+test('批次4：内核扫描**全量**收录（无文件数上限；100 篇全部进索引）', () => {
+  // 运行时守卫（对应"知识库不做上限约束"，2026-09-30 裁决）：文档数不再受任何常量约束 ——
+  // 这里用 100 篇验证"数量不改变收录行为"（原先若有 5000 篇级上限，规模问题会在此类用例中显现；
+  // 真正的防回退由 knowledge-index-cap.test.mjs 的源码守卫钉住）。
+  const { store, root } = makeStore()
+  const sp = join(root, 'my-notes')
+  for (let i = 0; i < 100; i++) writeFileSync(join(sp, `f${String(i).padStart(3, '0')}.md`), `# 文档 ${i}\n`, 'utf-8')
+  store.load({ force: true })
+  assert.equal(store.stats().docs, 100, '全量收录：100 篇必须一篇不少')
+  assert.equal(store.stats().filesTruncated.truncated, false)
 })
 
 test('批次4：walkMd 撞上限时 stats.truncated=true 且不再静默', async () => {

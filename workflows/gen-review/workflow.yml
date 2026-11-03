@@ -1,0 +1,103 @@
+# gen-review —— 生成-审查循环（编排预置 v1，2026-10-07 编排扩展 D26 / spec §4.7）
+# 消费面：会话循环模式选择器「编排」分组（orchestrate 段 = 声明；expose 缺省 private，
+#   **不进工具池、不进提示词工作流清单**——两消费面分界的活例）。
+# 结构：start → rl_loop[generate → review → save]×≤3 → answer → end
+#   轮间反馈：generate 读 {{var.last_review}}（首轮为空串 = 无审查意见，出首版）；save 把
+#   当轮审查意见写进 var 作用域。★ 不得改回 {{review.text}}——review 在 DAG 上不是
+#   generate 的上游（跨轮前向引用），内核 validateWorkflow 会以 VAR_UNREACHABLE 拒绝整份
+#   定义（kernel-tests/workflow-genreview.test.mjs 把这一点钉死）。
+#   提前终止：review 判词含「通过」即 break；≤3 轮兜底（未过则带最新意见出最后一版）。
+# 回复合成：answer 节点 → finalOutput.answer → composeOrchestrationReply 的 answer 键
+#   （kernel/orchestrate.mjs，缺 orchestrate.reply 时的缺省链）。
+name: gen-review
+description: 生成-审查循环：生成者产出，审查者判词；未过则带反馈重生成（≤3 轮）
+version: 1.0.0
+orchestrate:
+  display_name: 生成-审查循环
+inputs:
+  - { name: message, type: string, required: true }
+settings:
+  max_parallel: 4
+trigger_config:
+  manual: true
+  auto_trigger: false
+nodes:
+  - id: start
+    type: start
+    label: 开始
+    position: { x: 40, y: 240 }
+
+  - id: rl_loop
+    type: loop
+    label: 生成-审查循环(≤3轮)
+    position: { x: 240, y: 240 }
+    config:
+      count: 3
+      continue_on_error: false
+      body: [generate, review, save]
+      break_conditions:
+        - var: review.text
+          op: contains
+          value: 通过
+
+  # 反馈变量放提示词最前：首轮渲染为空串（首版），其后逐轮携带上一轮审查意见。
+  - id: generate
+    type: agent
+    label: 生成者
+    position: { x: 240, y: 420 }
+    config:
+      prompt: |
+        {{var.last_review}}
+        你是生成者。任务：
+        {{inputs.message}}
+
+        若上面审查意见为空 = 首版；非空时必须逐条按其修订，输出修订后的**完整**交付物。
+      system: 你是 Ponos 的生成者。用简体中文只输出交付物本身，不解释过程。
+      max_iters: 10
+      timeout_ms: 300000
+
+  - id: review
+    type: agent
+    label: 审查者
+    position: { x: 440, y: 420 }
+    config:
+      # 判词规则放最前（严格格式输出常规写法；也让 mock 回显窗口对「通过」有足够余量，
+      # 真实文件的提前终止可被确定性断言——见 workflow-genreview 测试）。
+      prompt: |
+        输出规则：只输出一行判词——无问题以「通过」开头；有问题以「需修改：」开头并列出具体修改点。
+
+        审查以下交付物：
+        {{generate.text}}
+      system: 你是 Ponos 的审查者。用简体中文，只输出判词本身。
+      max_iters: 10
+      timeout_ms: 300000
+
+  - id: save
+    type: assign
+    label: 记录审查意见
+    position: { x: 640, y: 420 }
+    config:
+      items:
+        - variable: last_review
+          value: "{{review.text}}"
+
+  # 取末轮 generate 输出（引擎 vars 里 node id 键随每轮 settle 覆盖 = 最后一版交付物）。
+  - id: answer
+    type: answer
+    label: 交付物
+    position: { x: 840, y: 240 }
+    config:
+      template: "{{generate.text}}"
+
+  - id: end
+    type: end
+    label: 结束
+    position: { x: 1040, y: 240 }
+
+# 执行顺序唯一真相（nodes 数组顺序无语义）；loop body 子图边不得跨边界（BODY_ESCAPE）。
+edges:
+  - { id: e1, source: start, target: rl_loop }
+  - { id: e2, source: rl_loop, target: answer }
+  - { id: e3, source: answer, target: end }
+  - { id: e4, source: generate, target: review }
+  - { id: e5, source: review, target: save }

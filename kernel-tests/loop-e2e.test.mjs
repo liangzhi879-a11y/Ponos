@@ -6,7 +6,7 @@
 //     parseArgs 里是**未知参数**，会被静默忽略 → 审批档位回落默认 → 验真 Bash 会挂在
 //     审批上；必须用契约里的全名）
 //   · mock：PONOS_MOCK_API=1（内核内置幂等 mock 流，无网络）
-//   · 会话 home：CLAUDE_CONFIG_DIR（resolveConfigDir 第一优先级；同时给 PONOS_HOME
+//   · 会话 home：PONOS_CONFIG_DIR（resolveConfigDir 第一优先级；同时给 PONOS_HOME
 //     兜底，与 chat-mode.test.mjs 同口径）
 // 覆盖：loop start/iter/end 帧推进、loop_command（status/replay/memory/stop）回执、
 // 零回归锁②（无 loop 字段的普通消息不得发任何 loop 帧）、doneWhen 失败轮 iter 带
@@ -34,7 +34,7 @@ function makeKernel(extraEnv = {}, opts = {}) {
   const env = {
     ...process.env,
     PONOS_MOCK_API: '1',
-    CLAUDE_CONFIG_DIR: home,
+    PONOS_CONFIG_DIR: home,
     PONOS_HOME: home,
     PONOS_BUDGET_USD: '0',
     // [mock:write]（本文件 doneWhen 用例用）写文件的目标目录：固定为本次临时 add-dir，

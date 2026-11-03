@@ -48,9 +48,15 @@ function makeEnv({ window }) {
 }
 
 test('小窗口：est + 默认预算超窗 → 每轮调用前收窄 max_tokens（output_budget_clamped 事件）', async () => {
-  const env = makeEnv({ window: 5000 })
+  // ★ 2026-10-26：窗口从 5000 调到 20000。**不是放宽断言**，是口径变化后的必要修正：
+  //   `estimateRequest` 现在把**工具面（system + tools + messages 的固定前缀）**计入估算
+  //   （本次修复的根因项），而本仓静态工具面本身就约 9.7K token —— window=5000 时
+  //   est 恒大于窗口，`window−est−2048` 必为负 ⇒ 走到的是"退化 floor"那条分支，
+  //   本用例要验的钳制公式根本走不到。20000 让 est 装得下，公式才有意义；
+  //   "est 已超窗"的行为由下一条用例单独锁死（含 floor 与不放大两条不变量）。
+  const env = makeEnv({ window: 20000 })
   try {
-    // 系统提示 3000 字符 ≈ 754 tokens：输入 + 64K 预算必超 5K 窗口
+    // 系统提示 3000 字符 ≈ 754 tokens：输入 + 64K 预算必超 20K 窗口
     env.engine.setSystemPrompt('x'.repeat(3000))
     const result = await env.engine.runTurn({ content: 'hello' })
     assert.ok(String(result.text || '').includes('mock:'), '钳制后请求正常完成（mock 回显）')
@@ -61,6 +67,28 @@ test('小窗口：est + 默认预算超窗 → 每轮调用前收窄 max_tokens�
     assert.ok(e.maxTokens >= 1024, '不低于 floor')
     assert.ok(e.maxTokens <= e.window - e.estInputTokens - 2048 + 1, `钳制值应 ≤ window−est−2048（${JSON.stringify(e)}）`)
     assert.ok(e.estInputTokens >= 700, `输入估算应含系统提示（实际 ${e.estInputTokens}）`)
+    // ★ 本次修复的回归锁：est 必须**含工具面**。旧口径只算 system+messages，在 110 个 MCP
+    //   工具的现场会低报约 100K token（"压缩永不触发"的根因）。这里断言它至少包含
+    //   静态工具面的量级 —— 低于 2000 就说明 tools 又被漏计了。
+    assert.ok(e.estInputTokens >= 2000, `输入估算必须包含工具面 schema（实际 ${e.estInputTokens}；漏计 tools 会掉到 ~750）`)
+  } finally { env.cleanup() }
+})
+
+test('est 已超窗（工具面前缀装不下）：钳制退化到 floor，绝不放大请求', async () => {
+  // 真实形态：128K 本地模型 + 110 个 MCP 工具 ≈ 101K 固定前缀时，任意更小窗口下
+  // `window−est−reserve` 必为负。clamp 的既有契约是"cap < floor ⇒ 返回 floor"
+  // （宁可小预算尝试，也不放大请求）。此处把该分支钉死——它此前从未被覆盖。
+  const env = makeEnv({ window: 5000 })
+  try {
+    env.engine.setSystemPrompt('x'.repeat(3000))
+    const result = await env.engine.runTurn({ content: 'hello' })
+    assert.ok(String(result.text || '').includes('mock:'), '退化后仍能尝试请求（不阻断）')
+    const clampEvts = env.events.filter((e) => e.subtype === 'output_budget_clamped')
+    assert.ok(clampEvts.length >= 1, '应发出预算钳制事件')
+    const e = clampEvts[0]
+    assert.ok(e.estInputTokens > e.window, `本用例前提：est 已超窗（est=${e.estInputTokens} window=${e.window}）`)
+    assert.equal(e.maxTokens, 1024, 'est 超窗时必退 floor')
+    assert.ok(e.maxTokens <= 64000, '退化也不得放大请求')
   } finally { env.cleanup() }
 })
 

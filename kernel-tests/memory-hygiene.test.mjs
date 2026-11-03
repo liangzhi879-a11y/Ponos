@@ -1,11 +1,11 @@
 // S5 Task 3：记忆条目的源头数据卫生（spec §9.1，真实库实测问题）
 // ---------------------------------------------------------------------------
-// 实测：真实库 `~/.yfw/memory/personal` 有 7 条 `full` 仅 10 字的空模板条目
+// 实测：真实库 `~/.ponos/memory/personal` 有 7 条 `full` 仅 10 字的空模板条目
 // （`流程要点：用户回答：`、`业务要点（请注意）：`），它们是 captureMemoryCandidates
 // 模板化写入的产物；两两文本全同 → 关联层 cos=1.000，会灌入"完美相似但零信息"的边。
 // 处置：**修源头**（本文件的断言）+ 关联侧 MIN_LEN 防御（shared 层已有用例）。
 // 边界纪律：既有条目的读取兼容性**不得**改变（存量垃圾仍能被读出），故只测"不再产生新的"。
-// 隔离：一律 mkdtempSync + PONOS_HOME，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离：一律 mkdtempSync + PONOS_HOME，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'

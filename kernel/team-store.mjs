@@ -84,6 +84,30 @@ export function loadTeamConfig(configDir, { strict = false } = {}) {
 }
 
 /**
+ * 写路径专用的读：**读不出来就拒绝写**（返回 `{ error }`，由调用方折成 `{ok:false, reason}`）。
+ * ★ 为什么不能复用非 strict 读：非 strict 的"降级保命"会把损坏 / 被占用（EBUSY、EPERM）的配置
+ *   读成**空白配置**，调用方随后 `saveTeamConfig` 把它整体覆盖回盘 —— 丢掉的是不可再生的东西：
+ *   本机签名私钥（指纹一变，历史成员链上自己签的记录全验不过）、每个团队的 `teamKey`、
+ *   已加入团队列表。与 `tag-store` 的写侧（`strict: true`）同一条纪律，此处补上同一口径。
+ */
+function loadForWrite(configDir) {
+  try {
+    return { cfg: loadTeamConfig(configDir, { strict: true }) }
+  } catch (e) {
+    return { error: String((e && e.message) || e) }
+  }
+}
+
+/** 写路径读失败时的统一回执（调用方直接 return 它） */
+function corruptReason(error) {
+  return {
+    ok: false,
+    reason: 'config-corrupt',
+    message: `本机团队配置无法读取，已拒绝写入（避免覆盖私钥与团队密钥）：${error}`,
+  }
+}
+
+/**
  * 写本机配置（原子写 + **0600**）。
  * 权限必须收紧：文件里有本机私钥与团队密钥；默认 umask 下可能是 0644，同机其他用户可读。
  */
@@ -116,7 +140,9 @@ export function getLocalTeam(configDir, teamId) {
  */
 export function createTeam({ configDir, name, dir, now = Date.now(), identCode = null } = {}) {
   if (!dir) return { ok: false, reason: 'dir-required', message: '必须指定团队源目录' }
-  const cfg = loadTeamConfig(configDir)
+  const w = loadForWrite(configDir)
+  if (w.error) return corruptReason(w.error)
+  const cfg = w.cfg
   const src = openTeamSource(/** @type {Parameters<typeof openTeamSource>[0] & { root?: string }} */ ({ root: dir }))
   src.ensure()
 
@@ -358,7 +384,9 @@ export function joinTeam({ configDir, identCode, code, searchRoot = null, now = 
   const vcode = normalizeCode(code, VERIFY_CODE_LEN)
   if (!vcode) return { ok: false, reason: 'bad-code-format', message: `验证码应为 ${VERIFY_CODE_LEN} 位数字` }
 
-  const cfg = loadTeamConfig(configDir)
+  const w = loadForWrite(configDir)
+  if (w.error) return corruptReason(w.error)
+  const cfg = w.cfg
   const root = searchRoot || cfg.searchRoot
   if (!root || !existsSync(root)) return { ok: false, reason: 'search-root-missing', message: `搜索根不可用：${root || '(未设置)'}` }
 
@@ -537,7 +565,9 @@ export function importTeamPackage({ configDir, pack = null, text = null, sourceD
     }
   }
 
-  const cfg = loadTeamConfig(configDir)
+  const w = loadForWrite(configDir)
+  if (w.error) return corruptReason(w.error)
+  const cfg = w.cfg
   // 一次性：基于团队源成员日志（不是本机配置）⇒ 换机器/恢复备份也拦得住
   const { records } = readAllMemberLogs(src)
   if (consumedInvites(records).has(p.invite.memberId)) {
@@ -573,7 +603,9 @@ export function importTeamPackage({ configDir, pack = null, text = null, sourceD
  *   只补类型，**不改数据写路径**（写入的仍是被移除成员的那条签名记录）。
  */
 export function revokeMember({ configDir, teamId, memberId, now = Date.now() } = {}) {
-  const cfg = loadTeamConfig(configDir)
+  const w = loadForWrite(configDir)
+  if (w.error) return corruptReason(w.error)
+  const cfg = w.cfg
   const local = cfg.teams[String(teamId)]
   if (!local) return { ok: false, reason: 'not-a-member', message: '本机没有加入该团队' }
   const me = local.identity || cfg.identity
@@ -622,7 +654,9 @@ export function teamStatus({ configDir, teamId = null, now = Date.now() } = {}) 
 
 /** 设置搜索根（"两个数字加入"的前提：先告诉应用去哪儿找团队源）。 */
 export function setSearchRoot(configDir, root) {
-  const cfg = loadTeamConfig(configDir)
+  const w = loadForWrite(configDir)
+  if (w.error) return corruptReason(w.error)
+  const cfg = w.cfg
   cfg.searchRoot = root ? String(root) : null
   saveTeamConfig(configDir, cfg)
   return { ok: true, searchRoot: cfg.searchRoot }

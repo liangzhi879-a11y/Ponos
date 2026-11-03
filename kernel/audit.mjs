@@ -26,7 +26,10 @@ export function buildAuditReport(entries, { from = '', to = '', sessionId = '' }
     } else if (m.role === 'user' && Array.isArray(m.content)) {
       for (const b of m.content) {
         if (b?.type === 'tool_result') {
-          rows.push({ ts, seq: e.seq, session: e.sessionId || sessionId || '', type: 'tool_result', toolUseId: b.tool_use_id, summary: String(b.content || '').slice(0, 200) })
+          // ★ 结构化 content（多模态/多块结果，session.mjs 落盘的正是块数组）必须走 summarize：
+          //   直接 String(数组) 会得到 "[object Object],[object Object]" —— 审计行等于没有信息。
+          //   同文件的 tool_use 分支已用 summarize，此处与之对齐。
+          rows.push({ ts, seq: e.seq, session: e.sessionId || sessionId || '', type: 'tool_result', toolUseId: b.tool_use_id, summary: (Array.isArray(b.content) ? summarize(b.content, 200) : String(b.content ?? '')).slice(0, 200) })
         }
       }
     }

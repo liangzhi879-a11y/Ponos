@@ -8,7 +8,7 @@
 //      "实际行数 < 指纹" → 误判损坏 → 每次都整库重建（S1 的截断教训反过来咬人）。
 // 另：删除的块不得在物化文件里留下端点（读时校验是兜底，不是唯一防线）。
 //
-// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'

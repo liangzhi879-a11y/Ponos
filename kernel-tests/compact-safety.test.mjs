@@ -12,6 +12,7 @@ import {
   stripInlineThink,
   ageOutToolResults,
   CLEARED_TOOL_RESULT_MARKER,
+  recoverableRefOf,
 } from '../kernel/compact.mjs'
 import { estimateMessage } from '../kernel/context.mjs'
 
@@ -151,4 +152,58 @@ test('trimOversizedRequestCopy：裁剪最长块（头尾 30%+标记），不污
   assert.ok(trimmed.length < big.length, '体积下降')
   // 无超长内容 → null
   assert.equal(trimOversizedRequestCopy([{ role: 'user', content: 'short' }]), null)
+})
+
+// ── T2.5（2026-10-20）：不可重放工具结果的体积老化 ────────────────────────────
+// 问题：老化只看"工具是否可重放"的白名单 ⇒ Agent/Task 结果可能极大却永不清，
+// 一路驻留到下一次压缩（全额价）。改法：**体积阈值 + 可恢复性**两条件同时成立才清。
+
+const msgWith = (toolName, id, content) => ([
+  { role: 'assistant', content: [{ type: 'tool_use', id, name: toolName, input: {} }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] },
+])
+
+test('★ T2.5 大 Agent 结果（>16KB 且带可回读路径）⇒ 清除，且标记里保留路径', () => {
+  const big = `子 Agent 完整汇报…\ntranscriptPath: C:/x/lanes/t1.jsonl\n` + 'x'.repeat(20_000)
+  // 前面垫两条"最近"结果（keepRecent=2 ⇒ 它们保留），目标落在窗口外
+  const messages = [
+    ...msgWith('Agent', 'a1', big),
+    ...msgWith('Read', 'a2', 'r2'),
+    ...msgWith('Read', 'a3', 'r3'),
+  ]
+  const cleared = ageOutToolResults(messages, { keepRecent: 2 })
+  assert.ok(cleared >= 1, '★ 超 16KB 且可恢复的 Agent 结果必须被清除')
+  const body = messages[1].content[0].content
+  assert.match(body, /旧工具结果已清除/, '必须换成清除标记')
+  assert.match(body, /t1\.jsonl/, '★ 标记里必须保留可回读路径（否则子 Agent 的结论真找不回来）')
+})
+
+test('★ T2.5 大 Agent 结果但**给不出路径** ⇒ 不清（fail-closed）', () => {
+  const big = '没有路径的纯文本汇报\n' + 'x'.repeat(20_000)
+  const messages = [
+    ...msgWith('Agent', 'b1', big),
+    ...msgWith('Read', 'b2', 'r2'),
+    ...msgWith('Read', 'b3', 'r3'),
+  ]
+  ageOutToolResults(messages, { keepRecent: 2 })
+  assert.equal(messages[1].content[0].content, big, '★ 抠不到路径就不许清（清了=信息永久删除）')
+})
+
+test('★ T2.5 小结果不清（防误伤：清了只会逼模型重跑）', () => {
+  const small = 'transcriptPath: C:/x/lanes/t2.jsonl\n小结果 3 KB'
+  const messages = [
+    ...msgWith('Agent', 'c1', small),
+    ...msgWith('Read', 'c2', 'r2'),
+    ...msgWith('Read', 'c3', 'r3'),
+  ]
+  ageOutToolResults(messages, { keepRecent: 2 })
+  assert.equal(messages[1].content[0].content, small, '★ 未超 16 KB 不清')
+})
+
+test('T2.5 recoverableRefOf：只认 transcriptPath / path="…" 两种形态', () => {
+  assert.equal(recoverableRefOf('transcriptPath: /a/b.jsonl'), '/a/b.jsonl')
+  assert.equal(recoverableRefOf('<persisted-output path="C:/x/y.json">'), 'C:/x/y.json')
+  assert.equal(recoverableRefOf('随便一个路径 /a/b.jsonl'), null, '★ 不许瞎猜普通文本里的路径')
+  assert.equal(recoverableRefOf(''), null)
+  assert.equal(recoverableRefOf(null), null)
 })

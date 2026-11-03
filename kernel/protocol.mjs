@@ -6,16 +6,21 @@
 // 以及 stdin 逐行路由（user / control_request / control_response）。
 // 事件 type 名与关键字段是跨层契约（§3-§6），必须保留；内部实现原创。
 
-export function writeLine(stream, obj) {
+export function writeLine(stream, obj, opts = {}) {
   // result = 一轮收尾 → 轮次结束，硬看门狗解武装（轮间空闲不误杀）
   if (obj && obj.type === 'result') turnActive = false
   try {
     stream.write(JSON.stringify(obj) + '\n')
+    // opts.heartbeat = true（活性心跳帧专用）：只推进**心跳**时刻，**不**推进"最近实质输出"。
     // 只有**写成功**才推进"最近 wire 输出时刻"（2026-09-12 异步链失活事故）：旧写法
     // 在 write 之前推进，写到已关闭/已销毁的 stdout 上一样算数——看门狗被一个"实际
     // 已经说不出话"的内核骗过去。自愈帧（guard_heal）尤其危险：每次愈合都写一帧，
     // 于是"续命本身"不断重置看门狗，2006s/2911s 的纯静默窗口就是这么被延续的。
-    lastWireWriteAt = Date.now()
+    // 两者必须分账（2026-09-21 长任务可靠性 P2）：心跳只证明"进程活着"，不证明"有实质
+    // 输出"。混为一谈，心跳就等于"续命"——每一次心跳都重置看门狗，真死也能被洗白
+    // （同一教训见上：guard_heal 帧把纯静默窗口延续到了 2006s/2911s）。
+    if (opts.heartbeat === true) heartbeatAt = Date.now()
+    else lastWireWriteAt = Date.now()
   } catch (e) {
     wireWriteFailures++
     lastWireWriteError = e?.message || String(e)
@@ -24,6 +29,13 @@ export function writeLine(stream, obj) {
 
 export function wireLastWriteAt() {
   return lastWireWriteAt
+}
+
+// 最近**心跳**时刻（活性心跳帧专用，与"最近实质输出"分账）：0 = 从未发过。
+// 取值方：cli 的进程级硬看门狗据此判断"内核事件循环还活着"，从而把"在飞工作"与"真失活"
+// 分开（判定纯函数在 kernel/heartbeat.mjs#judgeHardWatchdog）。
+export function wireHeartbeatAt() {
+  return heartbeatAt
 }
 
 // 写失败计数（硬看门狗现场指纹用）：连续失败 = stdout 实际已断，静默时长不再可信
@@ -58,6 +70,7 @@ export function isAwaitingUser() {
 }
 
 let lastWireWriteAt = Date.now()
+let heartbeatAt = 0
 let turnActive = false
 let awaitingUserCount = 0
 let wireWriteFailures = 0
@@ -75,6 +88,25 @@ export function makeWire(stream = process.stdout) {
   return {
     system(subtype, extra = {}) {
       writeLine(stream, { type: 'system', subtype, ...extra })
+    },
+    // 活性心跳（2026-09-21 长任务可靠性 P2）：`{type:'system',subtype:'activity',…}`
+    // —— 内核自报"此刻在忙什么、有多少活在飞"，让外围看门狗能把"在忙"与"已死"分开。
+    // ★ 与其它一切帧的根本区别：走 heartbeat 通道，**不推进** lastWireWriteAt
+    //   （见 writeLine 注释与 kernel/heartbeat.mjs 的纪律①②）。bridge 在解析前拦截
+    //   并用独立时间戳记时，不转发 GUI（前端无新契约）。
+    activity(fields = {}) {
+      writeLine(stream, { type: 'system', subtype: 'activity', ...fields }, { heartbeat: true })
+    },
+    // 慢盘豁免的**事前声明**（2026-09-23 会话健康快照 批 3）：`{type:'system',subtype:'disk_wait',…}`
+    // —— 内核在**同步落盘写之前**声明"我要等盘"。为什么只能事前：同步写期间主线程停摆 ⇒
+    // 心跳定时器也不跑 ⇒ 心跳发不出来（见 server/kernel-heartbeat.mjs 头注）。桥据本帧开一个
+    // **有界**豁免窗口（`min(windowMs, 120s)`，不叠加），窗口内不按静默判死。
+    // ★ 与 activity 的差别（刻意不同）：activity 走 heartbeat 通道（不推进 lastWireWriteAt），
+    //   本帧**照常**走普通通道——它本身就是在主线程还空闲时的一次真实 stdout 写入（写盘之前），
+    //   对"最近 wire 输出时刻"而言是**如实**的；桥侧另按同一纪律处理：拦截在 `_lastOutAt` 之前，
+    //   **不**把它算成"实质输出"（见 server/bridge.mjs 的 disk_wait 分支）。
+    diskWait(fields = {}) {
+      writeLine(stream, { type: 'system', subtype: 'disk_wait', ...fields })
     },
     assistant(contentBlocks, extra = {}) {
       const blocks = Array.isArray(contentBlocks)
@@ -124,12 +156,50 @@ export function makeWire(stream = process.stdout) {
     // 工具结果 live 回传（2026-09-09 会话 UI 标准化）：此前 wire 只发
     // tool_use、结果仅落盘 transcript（GUI 历史回放才可见）——内联工具卡片的
     // "执行中/完成/失败"状态机依赖本事件。bridge 转发、GUI 回填对应 part。
-    toolResult({ toolUseId, content, isError = false }) {
+    toolResult({ toolUseId, content, isError = false, additions, deletions }) {
       writeLine(stream, {
         type: 'tool_result',
         tool_use_id: toolUseId,
         content: String(content ?? ''),
         is_error: isError === true,
+        // 增删行数（2026-10-08，可选）：写侧工具的 meta（tools.mjs writeFile/editFile），
+        // 供 GUI 工具卡 +N −M 与轮末总结。仅当数值有限才写入 ⇒ 无数据的帧逐字同旧形状。
+        ...(Number.isFinite(additions) ? { additions } : {}),
+        ...(Number.isFinite(deletions) ? { deletions } : {}),
+      })
+    },
+    // 终端增量输出（2026-10-28 Task 3）：只走 UI，**不进模型上下文、不写 transcript**。
+    // seq 是调用方给的 **wire 帧序号**（每 tool_use_id 递增），与 kernel/terminal-stream.mjs
+    // 合帧器里的 seq（合帧序号）不是同一个概念，别混用。
+    // ★ 2026-10-29（终端修复）：可选 `tool` / `command`（**只增不改**，缺省时帧形状逐字同旧）。
+    //   用途只有一个：GUI 把"同一会话里多条命令的输出"拼成一条流时，用它们画段分隔
+    //   （`▍Bash · npm run build`）。此前 UI 只有 tool_use_id，画出来是一串无意义短码。
+    //   `command` 由调用方截断成**一行**（多行命令只取首行 + 省略号），且同样**不写 transcript**。
+    toolOutputDelta({ toolUseId, seq, stdout = '', stderr = '', truncated = false, tool = '', command = '' }) {
+      writeLine(stream, {
+        type: 'tool_output_delta',
+        tool_use_id: toolUseId,
+        seq,
+        stdout,
+        stderr,
+        truncated,
+        ...(tool ? { tool } : {}),
+        ...(command ? { command } : {}),
+      })
+    },
+    // 文件改动（写工具完成即发；additions/deletions 要求复用 tool_result 的同源数据，
+    // 防止两套计算漂移）；diff_hunk 由发送方截断（>8KB 带摘要标记）。
+    fileChange({ toolUseId, tool, op, path, additions = 0, deletions = 0, diffHunk = '', ts }) {
+      writeLine(stream, {
+        type: 'file_change',
+        tool_use_id: toolUseId,
+        tool,
+        op,
+        path,
+        additions,
+        deletions,
+        diff_hunk: diffHunk,
+        ts: ts || new Date().toISOString(),
       })
     },
     // —— subagent 生命周期事件（shape 对齐 release 内核，GUI usePonosCLI task_* 分支消费）——
@@ -145,6 +215,9 @@ export function makeWire(stream = process.stdout) {
     taskResumed({ taskId, prompt }) {
       writeLine(stream, { type: 'system', subtype: 'task_resumed', task_id: taskId, prompt: prompt || '' })
     },
+    /**
+     * @param {{ taskId?: any, lastToolName?: any, description?: any, usage?: { tool_uses?: number, total_tokens?: number, duration_ms?: number } }} p
+     */
     taskProgress({ taskId, lastToolName, description, usage = {} }) {
       writeLine(stream, {
         type: 'system', subtype: 'task_progress', task_id: taskId,
@@ -152,13 +225,20 @@ export function makeWire(stream = process.stdout) {
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
     },
-    // S3 结果承接：outputs 为子 agent 会话内全部 Write 产物路径（主 agent 中转
-    // 给下家子 agent 的"接力清单"，配合共享工作区实现流水线协同）
-    taskNotification({ taskId, status, summary, outputFile, usage = {}, outputs = [] }) {
+    // S3 结果承接：outputs 为子 agent 会话内**全部产物**路径（Write + Edit；主 agent
+    // 中转给下家子 agent 的"接力清单"，配合共享工作区实现流水线协同）；
+    // reads 为其 Read 过的文件（主 agent 据此避免重读）；transcriptPath 为其会话落盘
+    // 文件（可用 Read offset/limit 精确展开过程细节，替代"让子 agent 复述"）。
+    /**
+     * @param {{ taskId?: any, status?: any, summary?: any, outputFile?: any, usage?: { tool_uses?: number, total_tokens?: number, duration_ms?: number }, outputs?: any[], reads?: any[], transcriptPath?: any }} p
+     */
+    taskNotification({ taskId, status, summary, outputFile, usage = {}, outputs = [], reads = [], transcriptPath = '' }) {
       writeLine(stream, {
         type: 'system', subtype: 'task_notification', task_id: taskId,
         status: status || 'completed', summary: summary || '', output_file: outputFile || '',
         outputs: Array.isArray(outputs) ? outputs : [],
+        reads: Array.isArray(reads) ? reads : [],
+        transcript_path: transcriptPath || '',
         usage: { tool_uses: usage.tool_uses ?? 0, total_tokens: usage.total_tokens ?? 0, duration_ms: usage.duration_ms ?? 0 },
       })
     },

@@ -2,7 +2,8 @@
 // 三条铁律（本文件即其回归网）：
 //   ① 压力 tier 语义冻结——血条继续读它，失真档变化不得影响压力档；
 //   ② 两个 tier 严禁互相赋值（本文件断言互不干扰）；
-//   ③ distortion 为纯增量可选字段——无失真信号时恒 green 且不发事件（默认健康，不打扰）。
+//   ③ distortion 为纯增量可选字段——无失真信号时恒 green，且**失真轴不自行加发事件**
+//      （2026-10-08 起压力轮末每轮发帧；失真侧自身始终"变化才发"，本文件按新口径断言）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHealth, computeHealthScore } from '../kernel/health.mjs'
@@ -25,12 +26,13 @@ test('压力档语义不变：红档判定与承诺字段（15811 场景的回�
   assert.ok(r.reason.length > 0)
 })
 
-test('无失真信号：不发事件（默认健康不打扰），distortionTier 恒 green', () => {
+test('无失真信号：失真轴不加发事件（默认健康不打扰），distortionTier 恒 green', () => {
   const { ev, wire } = mk()
   const h = createHealth({ wire, env: {} })
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
+  assert.equal(ev.length, 1, '轮末压力帧照发（2026-10-08 口径）——与失真信号无关')
   h.recordTurnContent({ user: '实现 A', assistant: '好的，开始实现 A', toolDigest: [] })
-  assert.equal(ev.length, 0, '压力绿 + 失真绿：不发事件')
+  assert.equal(ev.length, 1, '无失真信号：recordTurnContent 不加发（失真侧"变化才发"不变）')
   assert.equal(h.getState().distortionTier, 'green')
   assert.equal(h.getState().tier, 'green')
 })
@@ -39,15 +41,16 @@ test('失真档变化也发事件（压力档不变时），且 pressure tier �
   const { ev, wire } = mk()
   const h = createHealth({ wire, env: {} })
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
-  assert.equal(ev.length, 0)
+  assert.equal(ev.length, 1, '前提：轮末压力帧已发（2026-10-08 口径）')
   // S2 强证据：关键实体成片丢失 → 失真红，而压力仍绿
+  // 注：基准须 ≥ summaryMissingMinBasis（8 项）才判红（2026-09-17 起，小样本缺失率无统计意义）
   h.recordCompactionAudit({
-    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', '阈值 120'],
+    entities: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts', 'src/h.ts'],
     missing: ['src/a.ts', 'src/b.ts'],
     ratio: 0.5,
   })
-  assert.equal(ev.length, 1, '失真转红必须发事件')
-  const last = ev[0]
+  assert.equal(ev.length, 2, '失真转红必须发事件（在轮末帧之外加发一帧）')
+  const last = ev[ev.length - 1]
   assert.equal(last.distortion.tier, 'red')
   assert.equal(last.tier, 'green', '两个 tier 互不干扰：压力档不因失真变化')
   assert.equal(last.distortion.trigger, 'm:summary:src/a.ts')
@@ -65,8 +68,8 @@ test('non-red 不下发 anchorText（省流量）；amber 只带档位与证据'
     missing: ['a.md', 'b.md'],
     ratio: 0.33,
   })
-  assert.equal(ev.length, 1)
-  const last = ev[0]
+  assert.equal(ev.length, 2, '轮末帧 + 失真转 amber 帧')
+  const last = ev[ev.length - 1]
   assert.equal(last.distortion.tier, 'amber')
   assert.equal(last.distortion.trigger, null, 'amber 不弹窗')
   assert.equal(last.distortion.anchorText, undefined, 'non-red 不下发锚点')
@@ -78,7 +81,9 @@ test('markFidelityResolved 后回绿并发事件（失真档有回绿路径，�
   const h = createHealth({ wire, env: {} })
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
   h.recordCompactionAudit({
-    entities: ['a.md', 'b.md', 'c.md', 'd.md'], missing: ['a.md', 'b.md'], ratio: 0.5,
+    entities: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md', 'g.md', 'h.md'],
+    missing: ['a.md', 'b.md'],
+    ratio: 0.5,
   })
   assert.equal(ev[ev.length - 1].distortion.tier, 'red')
   const ids = h.fidelityEvidence().active.map((i) => i.id)
@@ -89,14 +94,15 @@ test('markFidelityResolved 后回绿并发事件（失真档有回绿路径，�
   assert.equal(last.tier, 'green')
 })
 
-test('总开关 PONOS_FIDELITY=0：失真信号不产生事件（彻底静默）', () => {
+test('总开关 PONOS_FIDELITY=0：失真信号不产生事件（失真轴彻底静默）', () => {
   const { ev, wire } = mk()
   const h = createHealth({ wire, env: { PONOS_FIDELITY: '0' } })
   h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
+  assert.equal(ev.length, 1, '轮末压力帧照发（与失真开关无关）')
   h.recordCompactionAudit({
     entities: ['a.md', 'b.md', 'c.md', 'd.md'], missing: ['a.md', 'b.md'], ratio: 0.5,
   })
-  assert.equal(ev.length, 0, '关闭时不产生任何失真事件')
+  assert.equal(ev.length, 1, '关闭时失真信号不产生事件（audit 不加发）')
   assert.equal(h.getState().distortionTier, 'green')
 })
 
@@ -105,7 +111,10 @@ test('静默降级：fidelity 抛异常不影响压力档与主流程', () => {
   const h = createHealth({ wire, env: {}, getAnchorSource: () => { throw new Error('boom') } })
   assert.doesNotThrow(() => {
     h.recordTurnContent({ user: 'u', assistant: 'a', toolDigest: null })
-    h.recordCompactionAudit({ entities: ['a.md', 'b.md', 'c.md', 'd.md'], missing: ['a.md', 'b.md'], ratio: 0.5 })
+    h.recordCompactionAudit({
+      entities: ['a.md', 'b.md', 'c.md', 'd.md', 'e.md', 'f.md', 'g.md', 'h.md'],
+      missing: ['a.md', 'b.md'], ratio: 0.5,
+    })
     h.record({ usage: { input_tokens: 1000 }, lastUsage: { input_tokens: 1000 } })
   })
   const last = ev[ev.length - 1]

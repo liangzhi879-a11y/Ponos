@@ -45,6 +45,26 @@ function providerTokenVaultKey(providerId) {
   return 'provider:' + String(providerId) + ':token'
 }
 
+/**
+ * 是否「应用自身的凭据」库键：模型供应商令牌（`provider:<id>:token`）与 settings.json
+ * 迁移备份（`legacy.settings.<KEY>`）。
+ *
+ * ★ 为什么需要判别（2026-10-22 用户裁决）：`vault.enc` 有两个互不相干的区 ——
+ *   `secrets`（应用自己的密钥，**本函数覆盖的键全在这里**）与 `entries`（用户手工保存的
+ *   密码条目，见 `electron/vault.cjs`）。桥的 `vault:get/set` 通道**只读写 secrets**，
+ *   从不碰 entries；模型配置里的 API key 走的正是这条路径，属于**正常 API 调用的运行时
+ *   凭据**，不是"使用密码库中保存的内容"。
+ *   ⇒ 这类键不得触发审批弹窗（否则每次启动后的首次模型调用都会莫名问人，而用户打开
+ *     「密钥库」看到的是空的 entries 区）。
+ * @param {unknown} key
+ */
+function isInternalVaultKey(key) {
+  if (typeof key !== 'string' || key === '') return false
+  if (key.startsWith('legacy.settings.')) return true
+  const m = /^provider:(.+):token$/.exec(key)
+  return !!m && m[1] !== ''
+}
+
 // ★ 单一真源：秘密键名从 `shared/legacy-env.mjs` 派生（CJS→ESM 的 require 在本仓既有先例：
 //   `electron/main.cjs` 就 `require('../server/experience.mjs')`；Node ≥22.12 支持 require(esm)）。
 const { secretCredentialEnvKeys } = require('./legacy-env.mjs')
@@ -177,6 +197,7 @@ module.exports = {
   SETTINGS_CREDENTIAL_ENV_KEYS,
   providerTokenVaultKey,
   legacySettingsVaultKey,
+  isInternalVaultKey,
   isVaultPointer,
   vaultPointer,
   plainTokenOf,

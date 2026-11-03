@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, normalizeNode, unquote, toModel, serializeWorkflow, normalizeTriggers, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
+import { parseYaml, loadWorkflow, validateWorkflow, normalizeWorkflow, normalizeNode, unquote, toModel, serializeWorkflow, normalizeTriggers, discoverWorkflows, DSL_VERSION } from '../kernel/workflow-dsl.mjs'
 
 const GOOD = `name: demo
 version: 1.0.0
@@ -225,5 +225,138 @@ test('triggers 形状契约：裸逗号标量在列表与编辑器模型上必�
     assert.deepEqual(normalizeTriggers(['a', ' a ', '']), ['a', 'a'], '数组形态应去空去重空白')
     assert.deepEqual(normalizeTriggers(undefined), [], '缺失 → 空数组而非 undefined（避免下游 ?? [] 失效）')
     assert.deepEqual(toModel({ name: 'x', nodes: [], edges: [] }).triggers, [], '无 triggers 的模型也应为空数组')
+  })
+})
+
+// ---------- 编排扩展（2026-10-07，T3）：`orchestrate:` 段校验 / 透传 / 往返 ----------
+
+test('校验器·编排段规则组：四种错误码 + 合法边界 + 缺省零影响', () => {
+  const base = () => normalizeWorkflow({
+    nodes: [{ id: 'start', type: 'start' }, { id: 'done', type: 'end' }],
+    edges: [{ id: 'e1', source: 'start', target: 'done' }],
+  })
+  const codesOf = (wf) => validateWorkflow(wf).errors.map((e) => e.code)
+  const withO = (o) => { const w = base(); w.orchestrate = o; return codesOf(w) }
+
+  // 正向：缺省（无该段）零影响；完整合法段（含边界值）零报错
+  assert.deepEqual(codesOf(base()), [], '无 orchestrate 段的旧文件不得凭空报错')
+  assert.deepEqual(
+    withO({ display_name: '生成-审查循环', reply: 'deliverable', limits: { wall_ms: 1800000 } }), [],
+    '完整合法段不得报错')
+  assert.deepEqual(withO({ display_name: 'x'.repeat(60), limits: { wall_ms: 1 } }), [],
+    '边界正向：display_name 满 60 字符、wall_ms 最小正数均合法')
+  assert.deepEqual(withO({ limits: {} }), [], 'limits 空对象合法（wall_ms 缺省 30 分钟）')
+
+  // 负向：每规则恰有专属码
+  for (const v of ['x', null, 3, [1]]) {
+    assert.ok(withO(v).includes('ORCHESTRATE_NOT_OBJECT'), `${JSON.stringify(v)} 应报非对象`)
+  }
+  for (const v of [42, '', '   ', 'x'.repeat(61)]) {
+    assert.ok(withO({ display_name: v }).includes('ORCHESTRATE_BAD_DISPLAY_NAME'), `display_name=${JSON.stringify(v)} 应报`)
+  }
+  for (const v of [3, '', '   ']) {
+    assert.ok(withO({ reply: v }).includes('ORCHESTRATE_BAD_REPLY'), `reply=${JSON.stringify(v)} 应报`)
+  }
+  for (const v of ['x', null, [1], 3]) {
+    assert.ok(withO({ limits: v }).includes('ORCHESTRATE_BAD_LIMITS'), `limits=${JSON.stringify(v)} 应报`)
+  }
+  for (const v of [0, -1, NaN, Infinity, '1800000']) {
+    assert.ok(withO({ limits: { wall_ms: v } }).includes('ORCHESTRATE_BAD_WALL_MS'), `wall_ms=${String(v)} 应报`)
+  }
+})
+
+// ---------- 发布面校验（2026-10-09 发布 UX 线）：`expose:` 四错误 + 一警告 ----------
+// 坏 expose 的既有失败模式是**静默**（visibilityOf 静默 null=工具面无声消失；tool_name
+// 原样进工具表）——比"被拒并说明原因"更坏。规则组与 GUI validateLocal 镜像同组
+// （src/lib/workflowModel.ts，漂移守卫对账）。
+
+test('校验器·expose 规则组：四错误码 + bound 空名单警告 + 缺省零影响', () => {
+  const base = () => normalizeWorkflow({
+    nodes: [{ id: 'start', type: 'start' }, { id: 'done', type: 'end' }],
+    edges: [{ id: 'e1', source: 'start', target: 'done' }],
+  })
+  const res = (e) => { const w = base(); w.expose = e; return validateWorkflow(w) }
+  const errs = (e) => res(e).errors.map((x) => x.code)
+  const warns = (e) => res(e).warnings.map((x) => x.code)
+
+  // 正向：缺省零影响；三态合法形态零报错零告警
+  assert.deepEqual(res(undefined).errors, [], '无 expose 段的旧文件不得凭空报错')
+  assert.deepEqual(res({ mode: 'private' }), { ok: true, errors: [], warnings: [] })
+  assert.deepEqual(res({ mode: 'public', tool_name: 'run_My.Flow-v2' }), { ok: true, errors: [], warnings: [] },
+    'tool_name 字符集允许 . - _（兼容 MCP sanitizeMcpName 口径）')
+  assert.deepEqual(res({ mode: 'bound', bind_agents: ['claude', 'codex'] }), { ok: true, errors: [], warnings: [] })
+
+  // EXPOSE_NOT_OBJECT：null / 串 / 数 / 数组（与 ORCHESTRATE_NOT_OBJECT 同口径，含显式 null）
+  for (const v of [null, 'public', 3, [1]]) {
+    assert.ok(errs(v).includes('EXPOSE_NOT_OBJECT'), `expose=${JSON.stringify(v)} 应报非对象`)
+  }
+  // EXPOSE_BAD_MODE：大小写变体 / 拼错 / 空串 / 显式 null / 缺省（连 mode 都不写）
+  for (const v of ['Public', 'publik', '', 3, null, undefined]) {
+    assert.ok(errs({ mode: v }).includes('EXPOSE_BAD_MODE'), `mode=${JSON.stringify(v)} 应报`)
+  }
+  assert.ok(errs({}).includes('EXPOSE_BAD_MODE'), '显式空对象（mode 缺省）应报：坏值不准静默回落 private')
+  // EXPOSE_BAD_BIND_AGENTS：非数组 / 数组含非串 / 显式 null
+  for (const v of ['claude', 3, {}, [1], ['a', 2], null]) {
+    assert.ok(errs({ mode: 'bound', bind_agents: v }).includes('EXPOSE_BAD_BIND_AGENTS'),
+      `bind_agents=${JSON.stringify(v)} 应报非字符串数组`)
+  }
+  // EXPOSE_BAD_TOOL_NAME：非法字符 / 前导数字 / 空串 / 超长 65 字符；64 字符是边界合法
+  for (const v of ['run 名', '含中文', '1abc', 'run/thing', '', 'a'.repeat(65)]) {
+    assert.ok(errs({ mode: 'public', tool_name: v }).includes('EXPOSE_BAD_TOOL_NAME'), `tool_name=${JSON.stringify(v)} 应报`)
+  }
+  assert.deepEqual(errs({ mode: 'public', tool_name: 'a'.repeat(64) }), [], 'tool_name 满 64 字符=边界合法')
+  // EXPOSE_BOUND_NO_AGENTS：bound 且名单缺省/为空 = 谁都调不到 → 警告，不拦保存
+  for (const e of [{ mode: 'bound' }, { mode: 'bound', bind_agents: [] }]) {
+    assert.deepEqual(res(e).errors, [], `bound 空名单不得报错：${JSON.stringify(e)}`)
+    assert.ok(warns(e).includes('EXPOSE_BOUND_NO_AGENTS'), `bound 空名单应告警：${JSON.stringify(e)}`)
+  }
+  assert.ok(!warns({ mode: 'public' }).includes('EXPOSE_BOUND_NO_AGENTS'), '非 bound 不得告警')
+})
+
+test('编排段往返：load → toModel → serialize → parse 不丢键（含嵌套 limits）', () => {
+  const yml = [
+    'name: gen-review',
+    'version: 1.0.0',
+    'trigger_config: { manual: true }',
+    'orchestrate: { display_name: 生成-审查循环, reply: deliverable, limits: { wall_ms: 1800000 } }',
+    'nodes:',
+    '  - { id: start, type: start }',
+    '  - { id: done, type: end }',
+    'edges:',
+    '  - { id: e1, source: start, target: done }',
+  ].join('\n')
+  const EXPECT = { display_name: '生成-审查循环', reply: 'deliverable', limits: { wall_ms: 1800000 } }
+  withFile(yml, (root) => {
+    const wf = loadWorkflow({ roots: [root], id: 'demo' })
+    assert.deepEqual(wf.orchestrate, EXPECT, 'load 应解析出编排段原形')
+    const model = toModel(wf)
+    assert.deepEqual(model.orchestrate, EXPECT, 'toModel 不得丢弃 orchestrate（TOP_KEYS 白名单）')
+    const text = serializeWorkflow(model)
+    assert.match(text, /^orchestrate: /m, '序列化应写回编排段')
+    const round = parseYaml(text)
+    assert.deepEqual(round.orchestrate, EXPECT, 'YAML 往返（含嵌套 limits）键值不得丢')
+    assert.equal(validateWorkflow(normalizeWorkflow(round)).ok, true, '往返产物仍是合法工作流')
+  })
+})
+
+test('discoverWorkflows：orchestrate 原样透传；无该段为 {}（presence 判据）', () => {
+  const yml = [
+    'name: gen-review',
+    'trigger_config: { manual: true }',
+    'orchestrate: { display_name: 生成-审查 }',
+    'nodes:',
+    '  - { id: start, type: start }',
+    '  - { id: done, type: end }',
+    'edges:',
+    '  - { id: e1, source: start, target: done }',
+  ].join('\n')
+  withFile(yml, (root) => {
+    const list = discoverWorkflows({ root })
+    assert.equal(list.length, 1)
+    assert.deepEqual(list[0].orchestrate, { display_name: '生成-审查' }, 'discover 应透传编排段')
+  })
+  withFile(GOOD, (root) => {
+    const list = discoverWorkflows({ root })
+    assert.deepEqual(list[0].orchestrate, {}, '无该段 → {}（与 expose 同款缺省；presence 由键存在判）')
   })
 })

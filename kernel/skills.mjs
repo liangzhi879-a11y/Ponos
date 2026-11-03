@@ -1,6 +1,7 @@
 // kernel/skills.mjs —— 技能发现内核化（与 bridge /skills 同一 schema：SKILL.md 目录 + legacy .md）
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { excludeDisabled } from './disabled.mjs'
 
 export function parseFrontmatter(content) {
   const m = String(content || '').match(/^---\r?\n([\s\S]*?)\r?\n---/)
@@ -41,13 +42,17 @@ function parseYamlSingle(raw, key) {
 
 // 技能发现（2026-09-12 P2-1 修复：平铺 .md 污染）。
 // 目录形式 <id>/SKILL.md 是技能唯一的**强约定**（bridge 安装、public/sample-skills、
-// ~/.yfw/skills 全用它）；平铺 <id>.md 只是 legacy 兼容，而 .md 后缀本身不含任何约定
+// ~/.ponos/skills 全用它）；平铺 <id>.md 只是 legacy 兼容，而 .md 后缀本身不含任何约定
 // ⇒ 项目根目录里任意文档都会被当成技能灌进提示词与 Skill 工具清单（实测：仓库根
 // BUILD.md 进了技能块，AGENTS.md 同样中招，而它们连 frontmatter 都没有）。
 // 两道闸：
 //   ① 平铺文件必须带 frontmatter（`---` 块）——纯说明文档不是技能；
 //   ② allowFlat=false 的根（项目目录/addDirs）只认目录形式；技能集合根
 //      （用户显式 --skills-dir、<configDir>/skills）才认平铺（见 cli 的 flatSkillRoots）。
+/**
+ * 发现单个根下的技能（目录形态 + 白名单根的平铺形态）。
+ * @param {{ root?: string, allowFlat?: boolean }} [opts]
+ */
 export function discoverSkills({ root, allowFlat = true } = {}) {
   if (!root || !existsSync(root)) return []
   let entries = []
@@ -79,6 +84,10 @@ export function discoverSkills({ root, allowFlat = true } = {}) {
       triggers: meta.triggers ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean) : parseYamlList(yaml, 'triggers'),
       parent: parseYamlSingle(yaml, 'parent'),
       subskills: parseYamlList(yaml, 'subskills').length ? parseYamlList(yaml, 'subskills') : parseYamlList(yaml, 'dependencies'),
+      // 技能**声明**的工作目录（P3，2026-09-21；判据/校验/上限见 kernel/skill-dirs.mjs）。
+      // 这里只做**解析**、不做任何授权判定：字段是"请求"，是否真放行由 skill-dirs 的
+      // 校验 + cli 的注入决定（本模块不持有边界，也不 import 边界模块）。
+      extraDirs: parseYamlList(yaml, 'extra_dirs'),
       lines: content.split('\n').length,
     })
   }
@@ -90,7 +99,17 @@ export function discoverSkills({ root, allowFlat = true } = {}) {
 // 传入数组（cli 的 flatSkillRoots：--skills-dir 与 <configDir>/skills）时按根白名单——
 // 提示词技能清单、Skill 工具的"可用技能"回执、SkillSearch 三处必须同口径，否则又回到
 // "清单里没有、报错里却有"的断裂。
-export function discoverSkillsAll({ roots = [], flatRoots = undefined } = {}) {
+/**
+ * 发现全部技能（多根合并、按 id 去重）。
+ *
+ * `disabled` = 全局停用清单（2026-09-15，D 条款）。**过滤在这里做**，因为本函数是技能清单的
+ * 唯一汇聚点：提示词的技能区块、`Skill` 工具的可用清单都取自它 —— 在这里剔除，两处自动一致。
+ * 若改由各消费者各自过滤，就会出现"提示词里没了、工具还能按名调用"的半生效状态（最难察觉）。
+ *
+ * 缺省（不传）= 不过滤：本函数也是公开口（测试/嵌入直接调用），缺省收窄会把它们的既有行为打断。
+ * cli 侧两个消费者都必须显式传 `disabled`，由静态守卫测试钉住"没有漏传"。
+ */
+export function discoverSkillsAll({ roots = [], flatRoots = undefined, disabled = undefined } = {}) {
   const out = []
   const seen = new Set()
   for (const root of roots) {
@@ -100,13 +119,17 @@ export function discoverSkillsAll({ roots = [], flatRoots = undefined } = {}) {
       if (!seen.has(s.id)) { seen.add(s.id); out.push(s) }
     }
   }
-  return out
+  return excludeDisabled(out, disabled)
 }
 
 // 技能全文加载（Skill 工具执行体）：按 id 在 roots 中找 <root>/<id>/SKILL.md 或
 // <root>/<id>.md，返回完整内容（含 frontmatter 与操作步骤）；未命中返回 null。
 // flatRoots 口径与 discoverSkillsAll 一致（undefined = 全认平铺；数组 = 根白名单）：
 // 提示词里不存在的 id 也不该能经 Skill 工具加载到（否则模型可把项目文档当技能读）。
+/**
+ * 技能全文加载（Skill 工具执行体）。
+ * @param {{ roots?: string[], id?: string, flatRoots?: any }} [opts]
+ */
 export function loadSkillContent({ roots = [], id, flatRoots = undefined } = {}) {
   if (!id) return null
   for (const root of roots) {
@@ -142,4 +165,126 @@ export function verifySkillVersions({ lockPath, skills = [] }) {
     if (want && s.version && want !== s.version) outdated.push({ id: s.id, lock: want, disk: s.version })
   }
   return { outdated }
+}
+
+// ── 技能详情（只读）────────────────────────────────────────────────────────
+// 2026-09-15，待处理清单 P1 批次二 C：用户要求"每张卡片注明 skill 详情，展开可管理触发规则、
+// 管理关联脚本"。设计决策 D2 = **只读展示 + 系统打开文件** —— 应用不写用户的 SKILL.md。
+//
+// ⚠️ D2 口径已于 2026-09-21 修订为**分级写**（技能工坊 spec §9）：
+//   · 草稿区（<configDir>/skills/.drafts/）**程序可写** —— 草稿不进提示词、不影响当前会话技能清单，风险可控；
+//   · 技能根（<configDir>/skills/<id>/）写入**必经人工确认 + 硬门校验 + 注入扫描 + 版本备份 + 可回滚**；
+//   · 本模块（技能发现/加载）与 /skill-detail（只读浏览）仍然**只有读** —— 浏览与写是两条通道。
+//   行为零变更：本模块不因该修订而新增任何写路径。
+//
+// 为什么详情要**按需**取（而不是塞进 /skills 列表）：
+//   列表要列几十个技能，而脚本清单需要逐个 readdirSync 技能目录；为列表里每个技能都扫一遍
+//   目录，会把"打开技能页"变成一次几十次系统调用的批量操作（慢且无必要——用户没展开就不需要）。
+//
+// 只读的边界（重要）：本函数**只读**，不返回任何写接口，也不规范化/回写 SKILL.md。
+// 界面上"管理"的实际动作 = 系统默认程序打开文件（Electron `shell:open-path`），
+// 由用户在自己的编辑器里改——这样应用永不参与用户技能文件的格式演进（零格式风险）。
+
+/** 脚本/附件候选后缀：识别"关联脚本"时只认这些，避免把 .gitkeep、临时文件当脚本列出来。 */
+const SCRIPT_EXTS = ['.mjs', '.js', '.cjs', '.ts', '.py', '.sh', '.bash', '.ps1', '.bat', '.cmd', '.rb', '.pl']
+/** 其余可展示的伴随文件（不算脚本，但用户可能想看）。 */
+const DOC_EXTS = ['.md', '.json', '.yml', '.yaml', '.txt', '.csv', '.xlsx']
+
+/**
+ * 读取单个技能的详情（只读）。
+ *
+ * @param {{roots?: string[], id?: string, flatRoots?: string[]|undefined}} p
+ * @returns {null | {
+ *   id: string, dir: string, skillFile: string, isFlat: boolean,
+ *   triggers: string[], parent: string, parentSource: string,
+ *   subskills: string[], scripts: Array<{name: string, path: string, sizeKb: number}>,
+ *   docs: Array<{name: string, path: string, sizeKb: number}>, contentLines: number
+ * }} 未找到返回 null（调用方出 404，别让界面拿到半个对象）
+ */
+export function loadSkillDetail({ roots = [], id = '', flatRoots = undefined } = {}) {
+  const want = String(id || '').trim()
+  if (!want) return null
+  for (const root of roots) {
+    if (!root || !existsSync(root)) continue
+    const allowFlat = Array.isArray(flatRoots) ? flatRoots.includes(root) : true
+    const dir = join(root, want)
+    const mdPath = join(dir, 'SKILL.md')
+    // ① 标准形态：<root>/<id>/SKILL.md
+    if (existsSync(mdPath)) {
+      let content = ''
+      try { content = readFileSync(mdPath, 'utf-8') } catch { return null }
+      return buildSkillDetail({ id: want, dir, skillFile: mdPath, content, isFlat: false })
+    }
+    // ② legacy 形态：<root>/<id>.md（仅白名单根；与 discoverSkills 的 allowFlat 同口径）
+    if (allowFlat) {
+      const flat = join(root, `${want}.md`)
+      if (existsSync(flat)) {
+        let content = ''
+        try { content = readFileSync(flat, 'utf-8') } catch { return null }
+        // 平铺形态没有独立目录：脚本/伴随文件列父目录会混入**其他技能**的文件，
+        // 故显式返回空清单（宁可少显示，也不能让用户以为那是它的关联脚本）。
+        return buildSkillDetail({ id: want, dir: root, skillFile: flat, content, isFlat: true })
+      }
+    }
+  }
+  return null
+}
+
+/** 组装详情对象（拆出来便于单测两个形态的差异，尤其 isFlat 的文件清单处理）。 */
+function buildSkillDetail({ id, dir, skillFile, content, isFlat }) {
+  const detail = {
+    id, dir, skillFile, isFlat,
+    // triggers/parent/subskills 与 discoverSkills 同一套解析（复用，避免"列表里显示的"与
+    // "详情里显示的"不一致）
+    triggers: [],
+    parent: '',
+    // `explicit` = 技能在 SKILL.md 里**显式声明**了父级；界面据此显示"为何在此分组"，
+    // 并允许用户区分"声明的"与"按前缀猜的"（D1：显式优先、启发式兜底）。
+    parentSource: 'none',
+    subskills: [],
+    // 声明的 `extra_dirs`（原样，未校验）：界面据此提示"本技能会申请哪些工作目录"——
+    // 用户在看到技能卡片时就能预判会话边界会往哪里扩（授权可见性的一半）。
+    extraDirs: [],
+    scripts: [],
+    docs: [],
+    contentLines: content.split('\n').length,
+    // ★ 2026-10-10（P2「起草修订」需要）：透出**正文全文**——函数本就已读入 content（用于数行数、
+    //   解析 frontmatter），此前只丢了它。为什么需要：候选 →「起草修订」要按 spec §4.4 第 2 条
+    //   「预填当前技能全文」打开草稿编辑器；没有正文，工坊只能开一个空框（用户得自己去别处复制）。
+    //   体积与安全：SKILL.md 通常几 KB，走本机 HTTP（非网络）；且这是**已安装技能**的正文，
+    //   技能详情面板本来就在展示它的解析结果——读全文不扩大任何权限面（写仍走草稿/安装链）。
+    content,
+  }
+  const yaml = String(content).match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || ''
+  const meta = parseFrontmatter(content)
+  detail.triggers = meta.triggers
+    ? String(meta.triggers).split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+    : parseYamlList(yaml, 'triggers')
+  const p = parseYamlSingle(yaml, 'parent')
+  if (p) { detail.parent = p; detail.parentSource = 'explicit' }
+  detail.subskills = parseYamlList(yaml, 'subskills').length
+    ? parseYamlList(yaml, 'subskills')
+    : parseYamlList(yaml, 'dependencies')
+  // 声明的工作目录（原样透出，供界面展示"本技能会申请哪些目录"；校验在 kernel/skill-dirs.mjs）
+  detail.extraDirs = parseYamlList(yaml, 'extra_dirs')
+
+  // 目录形态才列文件：平铺形态的父目录里混着别的技能（见调用处注释）。
+  if (!isFlat) {
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { entries = [] }
+    for (const it of entries) {
+      if (!it.isFile() || it.name === 'SKILL.md') continue
+      const lower = it.name.toLowerCase()
+      const ext = lower.slice(lower.lastIndexOf('.'))
+      if (!SCRIPT_EXTS.includes(ext) && !DOC_EXTS.includes(ext)) continue
+      let sizeKb = 0
+      try { sizeKb = Math.max(1, Math.round(readFileSync(join(dir, it.name)).length / 1024)) } catch { sizeKb = 0 }
+      const item = { name: it.name, path: join(dir, it.name), sizeKb }
+      if (SCRIPT_EXTS.includes(ext)) detail.scripts.push(item)
+      else detail.docs.push(item)
+    }
+    detail.scripts.sort((a, b) => a.name.localeCompare(b.name))
+    detail.docs.sort((a, b) => a.name.localeCompare(b.name))
+  }
+  return detail
 }

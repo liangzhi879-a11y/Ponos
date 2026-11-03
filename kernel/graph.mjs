@@ -13,6 +13,7 @@
 // 2026-09-13 知识内核 S1 Task 4：分词/向量/余弦/IDF/行指纹的**权威实现已迁到**
 // shared/knowledge-core.mjs，本模块只保留图谱存储与检索编排；纯函数按原签名 re-export。
 import { readMemoryEntries } from './memory.mjs'
+import { buildRelevantBlock, entryVector, resolveBudget } from './memory-rank.mjs'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, statSync, appendFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -33,7 +34,9 @@ function nodeLine(n) {
 
 function entryToNode({ theme, tag, summary, full }, idf) {
   const tagText = tag ? tag : ''
-  const vec = vectorizeText(`${theme} ${tagText} ${summary} ${full}`, { tagBoost: tag ? 3 : 1, idf })
+  // 向量口径**唯一真源**在 memory-rank.entryVector（tagBoost 3/1）——不在这里重写一遍，
+  // 否则"持久化的 vec"与"检索时现算的 vec"会悄悄分叉（实测过一次：对拍只是小样本巧合通过）。
+  const vec = entryVector({ theme, tag: tagText, summary, full }, idf)
   return { id: hashLine(nodeLine({ tag, summary, full })), theme, tag: tag || null, summary, full, ts: new Date().toISOString(), vec, v: GRAPH_VERSION }
 }
 
@@ -147,28 +150,21 @@ export function createGraphStore({ root = null } = {}) {
         renameSync(tmp, file)
       } catch { /* 磁盘不可写不致命 */ }
     },
-    search({ query = '', keywords = [], topK = 5, maxBytes = 2048 } = {}) {
-      const q = String(query || '').trim()
-      if (!q && !keywords.length) return ''
-      const qvec = vectorizeText(q || keywords.join(' '), { idf })
-      const scored = nodes.map((n) => {
-        const cos = cosine(n.vec, qvec)
-        const kw = keywordScore(n, keywords) / 8 // 关键词分最大值约 3+2+2+1=8，归一化到 0-1
-        return { ...n, score: 0.7 * cos + 0.3 * Math.min(kw, 1) }
-      }).filter((n) => n.score > 0.001)
-      scored.sort((a, b) => b.score - a.score || b.ts.localeCompare(a.ts))
-      const header = '\n\n【相关经验抽调】根据当前任务关键词，以下过往经验与任务直接相关，可直接参考（格式：-[主题|标签] 摘要 -- 全文）：\n'
-      let out = header
-      const seen = new Set()
-      for (const it of scored.slice(0, topK)) {
-        const line = `- [${it.theme}${it.tag ? '|' + it.tag : ''}] ${it.summary} -- ${it.full}`
-        if (seen.has(it.id)) continue
-        const lb = line.length + 1
-        if (out.length + lb > maxBytes) break
-        seen.add(it.id)
-        out += line + '\n'
-      }
-      return out === header ? '' : out
+    search({ query = '', keywords = [], topK = 5, maxChars = null, maxBytes = null } = {}) {
+      // ★★ 2026-09-30 统一（本模块头「经验条目级召回」的 B 路）：评分/排序/渲染/预算口径
+      //   改由 `kernel/memory-rank.mjs` 唯一真源提供，与 `memory.mjs#buildRelevantMemory`（A 路）
+      //   **完全同质**（同公式：0.7×向量 + 0.3×关键词；同排序键；同渲染格式；同**字符**预算）。
+      //   候选自带 `vec`（本 store 的节点已持久化）⇒ 统一模块直接复用，不重复向量化。
+      //   预算单位：`maxChars` 优先；只给旧参数 `maxBytes` 时按同数值当字符（历史调用点兼容）。
+      // 预算解析走 memory-rank 的**唯一口径**（`Number(null)===0` 陷阱见该函数注释）
+      const budget = resolveBudget({ maxChars, maxBytes })
+      return buildRelevantBlock(nodes, {
+        query: String(query || '').trim() || keywords.join(' '),
+        keywords,
+        idf,
+        topK,
+        maxChars: budget,
+      })
     },
   }
 }

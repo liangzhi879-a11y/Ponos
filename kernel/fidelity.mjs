@@ -56,6 +56,18 @@ export const DEFAULT_FIDELITY_CONFIG = {
   amber: 40,
   summaryMissingStrong: 0.4,
   summaryMissingMedium: 0.2,
+  // 失真量下限（token）：缺失比例达标但**丢失量**不足此值时不判强证据。
+  // 校准依据（2026-09-17，本机 **140 次真实压缩**的真实摘要上标定；基准=被要求保留的实质事实）：
+  //   下限 24 → 15.0% 判红；60 → 8.6%；100 → **5.0%**。取 100（≈ 4 个典型文件路径的量）：
+  //   红灯要"少而可信"——低于此值属压缩的正常损耗（走 amber 提示）。
+  //   反向核对：把关键事实一条不留（合成摘要）实测 ratio=1.00、失真 264 token ⇒ 仍必判红。
+  //   注意别照旧口径（分母饱和、丢失 500–1600 token）定这个值，那是已废弃的度量。
+  summaryMissingMinTokens: 100,
+  // 失真量下限的**相对档**：与"几乎全丢"路径（缺失率 ≥ summaryMissingNearTotal）配合使用——
+  // 此时只要丢失量达到基准的这一比例即判红，覆盖小基准下的"关键事实全丢"（绝对值不到 100 token）。
+  summaryMissingTokenShare: 0.6,
+  // "几乎全丢"的缺失率门槛：0.9 时才会走相对档（实测 0.8 会多出 3 例小基准轻微丢失，属噪声）
+  summaryMissingNearTotal: 0.9,
   minEntities: 3,
   goalCoverageMin: 0.15,
   goalWindow: 6,
@@ -91,6 +103,9 @@ export function fidelityConfigFromEnv(env = process.env) {
   cfg.amber = num(e.PONOS_FIDELITY_AMBER, cfg.amber)
   cfg.summaryMissingStrong = num(e.PONOS_FIDELITY_SUMMARY_MISSING_STRONG, cfg.summaryMissingStrong)
   cfg.summaryMissingMedium = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MEDIUM, cfg.summaryMissingMedium)
+  cfg.summaryMissingMinTokens = num(e.PONOS_FIDELITY_SUMMARY_MISSING_MIN_TOKENS, cfg.summaryMissingMinTokens)
+  cfg.summaryMissingTokenShare = num(e.PONOS_FIDELITY_SUMMARY_MISSING_TOKEN_SHARE, cfg.summaryMissingTokenShare)
+  cfg.summaryMissingNearTotal = num(e.PONOS_FIDELITY_SUMMARY_MISSING_NEAR_TOTAL, cfg.summaryMissingNearTotal)
   cfg.goalCoverageMin = num(e.PONOS_FIDELITY_GOAL_COVERAGE_MIN, cfg.goalCoverageMin)
   cfg.observeTurns = Math.max(0, Math.floor(num(e.PONOS_FIDELITY_OBSERVE_TURNS, cfg.observeTurns)))
   cfg.maxText = Math.max(1000, Math.floor(num(e.PONOS_FIDELITY_MAX_TEXT, cfg.maxText)))
@@ -106,6 +121,35 @@ export function normalizeEntity(s) {
   t = t.replace(/\s+/g, ' ').trim()
   t = t.replace(/\\/g, '/')
   return t.toLowerCase()
+}
+
+/**
+ * A 客观回绿判据（2026-09-16 锚定闭环修复）：某实体是否已由**工具记录**证实"重回上下文"。
+ *
+ * 为什么必须是工具记录、不能是模型文本：锚点文案自带缺失实体清单（`■ 此前摘要遗漏、
+ * 现已补回的关键事实 - src/x.ts`），模型被要求"先复述关键事实确认"——只要拿复述当依据，
+ * 必然假绿，正好绕过铁律②"模型自评最高只到 medium、不信任自述"。工具成功读取则是
+ * 真值优先级②的确定性事实：与模型怎么说无关。
+ *
+ * 只认 `isError !== true`（成功）：读**失败**恰恰说明实体仍不可达，不能算恢复。
+ * 路径匹配双向兼容相对/绝对写法，但要求落在**路径分隔符边界**上——防"同名不同目录"
+ * 被误判为恢复（`src/other/mcpApi.ts` ≠ `src/lib/mcpApi.ts`）。
+ */
+export function entityRegained(entity, digest) {
+  try {
+    const e = normalizeEntity(entity)
+    if (!e) return false
+    const list = Array.isArray(digest) ? digest : []
+    for (const d of list) {
+      if (!d || d.isError) continue
+      const p = normalizeEntity(d.path)
+      if (!p) continue
+      if (p === e) return true
+      if (p.includes('/' + e)) return true
+      if (e.includes('/' + p)) return true
+    }
+    return false
+  } catch { return false }
 }
 
 function uniqRaw(list, max) {
@@ -223,6 +267,12 @@ const FACT_RULES = [
   { key: 'window', re: /(?:窗口|window|context)[^\d]{0,6}(\d+(?:\.\d+)?\s*(?:k|K|KB|MB|万)?)/ },
 ]
 
+/**
+ * 抽 (key, value) 事实对：用于矛盾检测。key 为"被讨论的属性"，value 为其取值。
+ * `authoritative` 由调用方在锚点注入轮按**值**回填（见其消费点注释），故声明为可选字段。
+ * @param {string} text
+ * @returns {Array<{ key: string, value: string, sentence: string, authoritative?: boolean }>}
+ */
 export function extractFacts(text) {
   try {
     const raw = String(text ?? '').slice(0, 200_000)
@@ -246,20 +296,37 @@ export function detectContradictions(factsByTurn) {
   try {
     const turns = Array.isArray(factsByTurn) ? factsByTurn : []
     const byKey = new Map()
+    // 每个 key 的"权威取值集合"（由锚点注入轮的复述确立）。豁免须**沿 key 传递**：
+    // 实测发现只豁免注入轮那一条是不够的——锚点让模型在后续多轮里持续保持正确取值，
+    // 第 2 轮起再复述同一权威值时会与压缩前的旧自述重新配对并报矛盾（假失真照旧出现，
+    // 只是延后了 1 轮）。故只要"较晚侧取值 = 该 key 的权威取值"即视为复述，不计矛盾。
+    const authValues = new Map()
     turns.forEach((facts, i) => {
       for (const f of Array.isArray(facts) ? facts : []) {
         if (!f || !f.key || !f.value) continue
         if (EVOLVE_MARKERS.test(String(f.sentence || ''))) continue
         if (!byKey.has(f.key)) byKey.set(f.key, [])
-        byKey.get(f.key).push({ value: f.value, turn: i })
+        byKey.get(f.key).push({ value: f.value, turn: i, authoritative: !!f.authoritative })
+        if (f.authoritative) {
+          if (!authValues.has(f.key)) authValues.set(f.key, new Set())
+          authValues.get(f.key).add(f.value)
+        }
       }
     })
     const out = []
     for (const [key, list] of byKey) {
+      const av = authValues.get(key)
       for (let i = 0; i < list.length; i++) {
         for (let j = i + 1; j < list.length; j++) {
           if (list[i].value === list[j].value) continue
           if (list[i].turn === list[j].turn) continue // 同轮内不同表述不算（多为列举/否定）
+          // 锚点权威轮（2026-09-16 断反馈环）：较晚侧取值是**复述锚点里的权威事实**（勘误），
+          // 不是模型自相矛盾——旧行为会让"锚点要求复述 → 复述被当成新说法 → 与压缩前的
+          // 旧自述冲突 → 判失真 → 分数抬高、窗口延长 → 更多锚定"形成自维持反馈环。
+          // 只豁免"取值出现在锚点文本中"的那部分（按值判定，且沿 key 传递），故同轮中与
+          // 锚点无关的其他 key 矛盾照抓；模型改口成**非权威**取值也照抓（见 D3/D6/D4）。
+          if (list[j].authoritative) continue
+          if (av && av.has(list[j].value)) continue
           out.push({ key, a: list[i].value, b: list[j].value, turnA: list[i].turn, turnB: list[j].turn })
         }
       }
@@ -307,6 +374,10 @@ export function taskCoverage(anchorEntities, texts) {
 const ANCHOR_HEAD = '【上下文锚定 · 权威事实】'
 const ANCHOR_TAIL = '若上述事实与你记忆中的内容冲突，以上述为准；请先复述关键事实确认，再继续任务。'
 
+/**
+ * 组装锚点文本（原始任务 / 补回的关键事实 / 会话记忆 / 硬约束），按 `maxBytes` 截断。
+ * @param {{ task?: any, memoryText?: any, missing?: any[], constraints?: any[], maxBytes?: number }} [opts]
+ */
 export function buildAnchorText({ task, memoryText, missing, constraints, maxBytes = 4096 } = {}) {
   try {
     const segs = []
@@ -351,6 +422,26 @@ function cutUtf8(s, maxBytes) {
 // 聚合器：证据 → 档位
 // ---------------------------------------------------------------------------
 
+/**
+ * 依据失真量给出**可执行**建议——这是"按失真量分级"的落点：不只报警，还告诉用户现在该做什么。
+ * 分级门槛与 cfg 同源（0.4/0.6），避免两处漂移。
+ */
+function summaryLossAdvice({ ratio = 0, lostTokens = null, sample = '' } = {}) {
+  const tok = lostTokens === null || lostTokens === undefined ? '' : `（约 ${lostTokens} token）`
+  const who = sample ? `，如 ${sample}` : ''
+  if (ratio >= 0.6) {
+    return `关键事实成片丢失${who}${tok}：建议立刻把丢失项补回摘要，或新建会话 / 缩小单次压缩覆盖范围——在当前上下文里继续长跑会持续丢事实。`
+  }
+  if (ratio >= 0.4) {
+    return `丢失了较多关键事实${who}${tok}：建议在下一轮摘要里显式保留这些条目，或把任务拆小以减少单次压缩量。`
+  }
+  return `有少量关键事实未保留${who}${tok}，属压缩的正常损耗；若后续仍要用到，可在摘要里补一句。`
+}
+
+/**
+ * 失真检测器工厂（证据累积 → 档位判定）。
+ * @param {{ config?: any, getAnchorSource?: any, now?: any }} [opts]
+ */
 export function createFidelity({ config, getAnchorSource, now } = {}) {
   const cfg = { ...DEFAULT_FIDELITY_CONFIG, ...(config || {}) }
   const clock = typeof now === 'function' ? now : () => new Date()
@@ -366,6 +457,11 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
   let observeUntilTurn = null
   let goalMissStreak = 0
   const toolErrorTurns = new Map() // 归一化路径 → 出现报错的轮次集合（陈旧引用的真值）
+  // 锚点权威标记（2026-09-16 断反馈环）：engine 在**确实注入锚点**时调用
+  // markAnchorInjected(anchorText)，记下锚点原文的归一化文本；本轮 recordTurn 提取出的
+  // 事实中"取值出现在锚点文本里"的那些标记为 authoritative（= 复述锚点权威值），矛盾检测
+  // 不计它们与历史的冲突。一次性消费；未注入则恒为 null，默认行为完全不变。
+  let anchorHay = null
 
   const enabled = () => cfg.enabled !== false
 
@@ -395,6 +491,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       if (prev.resolved) {           // 复发：复活 + 打标记（前端据此升级动作为"新建会话"）
         prev.resolved = false
         prev.recurred = true
+        prev.autoResolved = false    // 客观回绿后又复发 ⇒ 不再是"已修复"，标记须撤（否则证据日志误报）
         // 复发次数：前端抑制键含次数（<id>#recurred<n>），否则第一次复发登记后，
         // 第二次及以后的复发会撞同一个键而被静默（用户以为已解决）。
         prev.recurredCount = (prev.recurredCount || 0) + 1
@@ -411,6 +508,11 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     return it
   }
 
+  /**
+   * 记一条失真证据（同 id 复发则累加 hits）。
+   * `points` 可选：缺省 1 点，个别信号按 spec §3.2 显式给 2 点（仅内部档位判定用）。
+   * @param {{ id?: any, axis?: any, kind?: any, strength?: any, turn?: any, evidence?: any, detail?: any, points?: number }} issue
+   */
   function mkIssue({ id, axis, kind, strength, turn: t, evidence, detail, points }) {
     return {
       id, axis, kind, strength, turn: t,
@@ -488,6 +590,15 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
 
       // 内部矛盾（同 key 互斥取值，排除显式演进）
       const facts = extractFacts(user + '\n' + assistant)
+      // D 断反馈环：锚点注入轮里"复述锚点权威值"的事实标记为 authoritative。按**值**判定
+      // （值须出现在锚点文本中），而非整轮放行——同轮中与锚点无关的取值照常参与检测。
+      // 标记一次性消费：下一轮（未注入）的矛盾照常报（见 fidelity-anchor-loop 的 D4）。
+      if (anchorHay) {
+        for (const f of facts) {
+          if (f && f.value && anchorHay.includes(f.value)) f.authoritative = true
+        }
+        anchorHay = null
+      }
       factsByTurn.push(facts)
       if (factsByTurn.length > cfg.windowTurns * 2) factsByTurn.shift()
       // spec §3.2：「同一 key 在不同轮次对 ≥2 对 → 2 点」。id 按 key 去重（同一项只报一条），
@@ -531,8 +642,45 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       if (llm && typeof llm === 'object') {
         produced.push(...applyLlmAudit(llm))
       }
+
+      // A 客观回绿：模型侧是否已恢复，由**工具记录**判定（不采信任何自述）
+      autoResolveRegained(digest)
       return produced
     } catch { return [] }
+  }
+
+  // A 客观回绿（2026-09-16 锚定闭环修复）：压缩丢失的实体被工具**成功读取** ⇒ 该证据
+  // 描述的问题（摘要漏了它）已被确定性修复 ⇒ 自动消解。这补上了"锚点已在模型侧生效"
+  // 回流健康度的唯一客观通道——旧实现里这条通道根本不存在（消解只走 GUI 人工回传），
+  // 于是 red 窗口 12 轮内锚定按证据轮龄无差别重注，模型第 1 轮就恢复也照注满 11 轮。
+  // 判据是工具记录而非模型自述（守铁律②）；逐实体核实、不做整档清空；打 autoResolved
+  // 标记以便审计区分"客观已修复"与"用户点了重新锚定"，人工路径不受影响。
+  function autoResolveRegained(digest) {
+    try {
+      let n = 0
+      for (const it of issues.values()) {
+        if (it.resolved || it.axis !== 'memory') continue
+        const entity = it.detail && it.detail.entity
+        if (!entity) continue
+        if (!entityRegained(entity, digest)) continue
+        it.resolved = true
+        it.autoResolved = true
+        it.resolvedAt = clock().toISOString()
+        n += 1
+      }
+      if (n > 0) observeUntilTurn = turn + cfg.observeTurns
+      return n
+    } catch { return 0 }
+  }
+
+  // engine 在**确实注入锚点**时调用。空文本不设标记（否则等于把该轮整轮放行，
+  // 会让 D 变成矛盾检测的漏洞）。
+  function markAnchorInjected(anchorText) {
+    try {
+      const hay = normalizeEntity(anchorText)
+      anchorHay = hay || null
+      return hay ? 1 : 0
+    } catch { anchorHay = null; return 0 }
   }
 
   function applyLlmAudit(llm) {
@@ -582,15 +730,35 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       // 若拿入参 missing 去重，差集恒空 → LLM 的遗漏发现被静默丢弃、永远不成证据。
       const reported = []
       const enough = entities.length >= cfg.minEntities
-      if (enough && missing.length && ratio >= cfg.summaryMissingStrong) {
-        // S2 强证据：关键实体成片丢失
+      // 失真量下限（2026-09-17，对应用户反馈"部分失真应当是正常的"）：只有"缺失比例高"不足以
+      // 判强证据——丢失的绝对量太小（例如只漏了一两个数字）属压缩的正常损耗，应落在 amber 角标
+      // 而不是红。旧调用方若不提供 lostTokens（如直接喂 ratio 的单测），volumeOk 恒真、行为不变。
+      const lostTokens = Number.isFinite(Number(audit.lostTokens)) ? Number(audit.lostTokens) : null
+      const basisTokens = Number.isFinite(Number(audit.basisTokens)) ? Number(audit.basisTokens) : null
+      // 失真量门槛——**两条独立转红路径**（校准自本机 141 次真实压缩）：
+      //   · 成片丢失：丢失 ≥ 100 token（≈ 4 个典型文件路径的量）
+      //   · 几乎全丢：缺失率 ≥ 0.9 且丢失 ≥ 基准的 60%（覆盖小基准下的全丢，如 70→70 token）
+      // 刻意**不设**"基准规模门槛"：曾加过（基准 <8 项一律降 amber，理由是缺失率统计意义不足），
+      // 但基准净化后实测它只挡下 1/141 例、且那例本身是"关键事实全丢"的真信号 ⇒ 净收益为负，
+      // 徒增一条任意阈值。噪声已由"基准只取实质事实"+ 体积门槛挡住。
+      const nearTotal = lostTokens !== null && basisTokens !== null
+        && ratio >= cfg.summaryMissingNearTotal
+        && lostTokens >= Math.ceil(basisTokens * cfg.summaryMissingTokenShare)
+      const volumeOk = lostTokens === null
+        || lostTokens >= cfg.summaryMissingMinTokens
+        || nearTotal
+      const lossPct = Math.round(ratio * 100)
+      const lossTok = lostTokens === null ? '' : `，失真量约 ${lostTokens} token`
+      const advice = summaryLossAdvice({ ratio, lostTokens, sample: missing[0] })
+      if (enough && missing.length && ratio >= cfg.summaryMissingStrong && volumeOk) {
+        // S2 强证据：关键事实成片丢失
         for (const m of missing.slice(0, 3)) {
           reported.push(m)
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'strong', turn,
-            evidence: `压缩摘要丢失关键事实 ${m}（关键实体缺失率 ${Math.round(ratio * 100)}%）`,
-            detail: { entity: m, ratio, total: entities.length },
+            evidence: `压缩摘要丢失关键事实 ${m}（关键事实缺失率 ${lossPct}%${lossTok}）。${advice}`,
+            detail: { entity: m, ratio, total: entities.length, lostTokens },
           })))
         }
       } else if (enough && missing.length && ratio >= cfg.summaryMissingMedium) {
@@ -599,8 +767,8 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
           out.push(push(mkIssue({
             id: `m:summary:${normalizeEntity(m)}`, axis: 'memory', kind: 'summary-missing-entity',
             strength: 'medium', turn, points: 2, // spec §3.2：缺失率 0.2–0.4 = 2 点
-            evidence: `压缩摘要可能遗漏 ${m}（关键实体缺失率 ${Math.round(ratio * 100)}%）`,
-            detail: { entity: m, ratio, total: entities.length },
+            evidence: `压缩摘要可能遗漏 ${m}（关键事实缺失率 ${lossPct}%${lossTok}）。${advice}`,
+            detail: { entity: m, ratio, total: entities.length, lostTokens },
           })))
         }
       }
@@ -637,6 +805,7 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
       id: it.id, axis: it.axis, kind: it.kind, strength: it.strength, turn: it.turn,
       evidence: it.evidence, detail: it.detail, at: it.at,
       ...(it.recurred ? { recurred: true, recurredCount: it.recurredCount || 1 } : {}),
+      ...(it.autoResolved && it.resolved ? { autoResolved: true } : {}),
     }
   }
 
@@ -729,9 +898,10 @@ export function createFidelity({ config, getAnchorSource, now } = {}) {
     observeUntilTurn = null
     goalMissStreak = 0
     toolErrorTurns.clear()
+    anchorHay = null
   }
 
-  return { recordTurn, recordCompactionAudit, markResolved, snapshot, evidenceLog, reset, getTurn: () => turn }
+  return { recordTurn, recordCompactionAudit, markResolved, markAnchorInjected, snapshot, evidenceLog, reset, getTurn: () => turn }
 }
 
 // 正则转义：刻意不用含反斜杠字面量的实现——编辑工具对替换文本做 sed 式展开

@@ -8,7 +8,7 @@
 //   ① 平铺文件必须带 frontmatter（`---` 块）——纯文档不是技能；
 //   ② 只有技能集合根（显式 --skills-dir、<configDir>/skills）认平铺；项目/addDirs
 //      根必须用 <id>/SKILL.md 目录形式。
-// 目录形式是技能唯一的强约定（bridge 安装、sample-skills、~/.yfw/skills 全用它），
+// 目录形式是技能唯一的强约定（bridge 安装、sample-skills、~/.ponos/skills 全用它），
 // 故本测试同时锁住"目录形式不被这两道闸误伤"。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

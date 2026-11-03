@@ -3,9 +3,13 @@
 //   <configDir>/memory/personal/{theme}.md，条目 `- [会话|标签] 摘要 -- 全文`
 // hashLine / parseEntryLine / keywordScore 的权威实现在 shared/knowledge-core.mjs
 // （2026-09-13 S1 Task 4 去重），本模块 re-export 保持既有导入点可用。
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { hashLine, parseEntryLine, keywordScore, toDocId, relationContent, MIN_LEN } from '../shared/knowledge-core.mjs'
+import { fileURLToPath } from 'node:url'
+import { writeFileAtomicSync } from '../shared/atomic-write.mjs'
+import { hashLine, parseEntryLine, keywordScore, toDocId, relationContent, MIN_LEN, ENTRY_LINE_RE } from '../shared/knowledge-core.mjs'
+import { buildRelevantBlock, normalizeKeywords, resolveBudget } from './memory-rank.mjs'
+import { withAttribution } from '../shared/attribution.mjs'
 
 export { hashLine, parseEntryLine, keywordScore }
 
@@ -30,12 +34,32 @@ function themePath(root, theme) {
   return join(root, `${theme}.md`)
 }
 
+/**
+ * 经验注入的唯一字节口径（S4.5③：字符→字节换算只在此处）。
+ * 用 UTF-8 字节而非 String.length —— 后者对中文系统性低估 ~2 倍
+ * （实测同一份"中文主题"输出：.length=225 / Buffer.byteLength=475）。
+ * 唯一性纪律：S1+（Task 2 buildSegmentMeters）只接收已算好的字节数，
+ * 不在此做换算；本函数是经验侧**唯一**的换算入口。
+ */
+export function memoryBytes(s) {
+  return Buffer.byteLength(String(s ?? ''), 'utf8')
+}
+
+/** 记忆根下的主题文件清单（**唯一**遍历入口：buildMemoryIndex / buildRelevantMemory 共用）。 */
+function listThemeFiles(root) {
+  return readdirSync(root).filter((x) => x.endsWith('.md'))
+}
+
 function readTheme(root, theme) {
   const fp = themePath(root, theme)
   if (!existsSync(fp)) return { front: {}, entries: [] }
   const raw = readFileSync(fp, 'utf-8')
   const { front, body } = parseFrontmatter(raw)
-  const entries = body.split(/\r?\n/).filter((l) => l.trim().startsWith('- ')).map((l) => {
+  // 条目判定必须与**读侧真源** `parseEntryLine` 同口径（`ENTRY_LINE_RE` = `^- \[...\]`）。
+  // 曾经用 `l.trim().startsWith('- ')`：会把**条目正文里的子项目符号**（续行，例如
+  // `- 问题 "…": 选择了 "…"`）也算成独立条目 ⇒ 实测 workflow 索引虚高 18 条（765 vs 真实 747），
+  // 且这些无结构片段会被 buildRelevantMemory 当"经验"注入（与其 header 声明的格式不符）。
+  const entries = body.split(/\r?\n/).filter((l) => ENTRY_LINE_RE.test(l.trim())).map((l) => {
     const text = l.trim()
     return { text, hash: hashLine(text), ...parseEntryLine(text) }
   })
@@ -73,11 +97,23 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
   const { front, entries } = readTheme(root, theme)
   const line = `- [会话${tag ? '|' + tag : ''}] ${summary} -- ${full}`
   if (entries.some((e) => e.hash === hashLine(line))) return { ok: true, deduped: true }
-  const head = Object.keys(front).length
-    ? Object.entries(front).map(([k, v]) => `${k}: ${v}`).join('\n')
-    : `name: ${theme}\ndescription: ${theme}\nactive: true`
+  // 【S2-D4 归属字段落盘】归属落在**文件 frontmatter**（本文件已用 frontmatter 承载
+  // name/description/active，`parseFrontmatter` 的键名正则天然容纳 camelCase，读取侧零改动）。
+  // 为什么不塞进条目行的 `[会话|标签]` 槽位（spec §6.2 D4 称该槽位为"作者位"）：那是模型可见/
+  // 人可见的格式，且既有哈希去重（hashLine 按行文本比较）与经验库文档都依赖它；混入机器字段会造成
+  // "旧条目旧格式、新条目新格式"的混合态，同一条内容换个写法即被视为两条，并污染注入模型的提示。
+  // L1 单作者下主题级与条目级归属等价。用 withAttribution 做**幂等**补充：已有值不被覆盖。
+  const baseFront = Object.keys(front).length
+    ? front
+    : { name: theme, description: theme, active: true }
+  const head = Object.entries(withAttribution(baseFront)).map(([k, v]) => `${k}: ${v}`).join('\n')
   const body = entries.map((e) => e.text).concat(line)
-  writeFileSync(themePath(root, theme), `---\n${head}\n---\n` + body.join('\n') + '\n', 'utf-8')
+  // ★★ 2026-10-18 CONC-01 修复：**原子写**（tmp + fsync + rename）。
+  //   原为裸 writeFileSync 就地覆盖：经验库是用户**不可重建**的资产，写到一半被强杀/断电
+  //   （或磁盘满）会留下半截 markdown；而读侧（readTheme）对畸形行是**宽容跳过**的，
+  //   于是"截断"被读成"少了几条"，下一次 append 再整篇重写 ⇒ 残存内容被永久抹掉。
+  //   原子写把"替换内容"变成目录项替换：读者要么看到完整旧内容、要么看到完整新内容。
+  writeFileAtomicSync(themePath(root, theme), `---\n${head}\n---\n` + body.join('\n') + '\n')
   // 神经图谱：markdown 权威写入成功后同步派生索引（graphStore 内部去重）
   if (graphStore) graphStore.append({ theme, tag, summary, full })
   // 知识索引增量更新（S3 §5）：同一会话的下一轮即可检索到刚沉淀的内容，不再等下次启动重建。
@@ -88,40 +124,73 @@ export function appendMemoryEntry({ root = '', theme = '', tag = null, summary =
   return { ok: true, deduped: false }
 }
 
-export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
+/** EL0 目标字节（注入 spec §4.2 :416：7 主题 ≈200 B。纯清单实测 254 B；含串头 368 B） */
+export const EL0_TARGET_BYTES = 200
+/** EL0 硬上限（A14：**恒在**的 EL0 ≤ 512 B） */
+export const EL0_MAX_BYTES = 512
+
+/**
+ * EL0 串头。**必须含`【个人经验索引】`** —— kernel-tests/knowledge-inject-e2e.test.mjs 的 NEEDLES
+ * 用它判定"经验层确实进了 system"，改文案前先看那个测试。
+ *
+ * 为何一定要有串头（不是可省的装饰）：改前串头告诉模型"用 Read 读取该行末尾标注的文件"——
+ * EL0 把**路径裁掉了**，那条指引不再可行；必须换成"用 KnowledgeSearch 检索该主题"的指引，
+ * 否则模型看到一堆裸主题列表不知道如何取详情（S4.5 的分层路由就断在这一句上）。
+ */
+const EL0_HEADER = '\n\n【个人经验索引】按主题汇总的过往经验（需要具体经验时用 KnowledgeSearch 检索对应主题）：\n'
+
+/**
+ * EL0 渲染：主题清单 `- [主题] N 条 · 最近日期`。
+ * lean 档 = 去掉"最近日期"，**保留全部主题名与条数**（只裁条目级细节，spec :475）。
+ */
+export function renderThemeList(themes, { lean = false } = {}) {
+  return (themes || [])
+    .map((t) => {
+      const suffix = !lean && t.latest ? ` · ${t.latest}` : ''
+      return `- [${t.theme}] ${t.count} 条${suffix}`
+    })
+    .join('\n')
+}
+
+/**
+ * EL0：经验**主题清单**（常驻 ~368 B）。
+ *
+ * 改前：条目式索引 —— 真实库 42 行 / 5131 B，本质是 L2 内容被当 L0 恒在塞进**每一轮**
+ * system（注入 spec :57 的原话诊断）。改后：每主题一行，只留主题名 + 条数 + 最近日期。
+ * 逐项核算（spec §4.2 :416）：5131 → 254 = **−4877 B/轮**（含串头 368 ⇒ −4763）。
+ * 归通道①②（system 静态）。
+ *
+ * 有意取舍（**不是漏洞，是 spec :475 的要求**）：
+ *   · 保留**全部**主题名 + 条数 —— 不得只留"最近 N 个"（那会让模型不知道还有哪些主题）。
+ *   · 因此当主题数很多（~15 个以上）时，lean 之后**不再截断**，输出可能 > EL0_MAX_BYTES。
+ *     真实库 7 主题 ⇒ 368 B，A14（≤512）成立；边界已被
+ *     kernel-tests/experience-dedup.test.mjs 锁成事实（改截断即红 ⇒ 提醒那是 spec 变更）。
+ *   · 0 条的主题**仍然列出**：模型据此区分"该主题存在但还没沉淀"与"库没有这个主题"。
+ *   · 空库 / 无 root ⇒ 空串（调用方据此判"无注入"）。
+ */
+export function buildMemoryIndex({ root = '', maxBytes = EL0_MAX_BYTES } = {}) {
   if (!root || !existsSync(root)) return ''
-  const list = []
+  const themes = []
   try {
-    for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
+    for (const f of listThemeFiles(root)) {
       const theme = f.slice(0, -3)
-      const { entries } = readTheme(root, theme)
-      if (!entries.length) continue
-      const groups = new Map()
-      let untagged = 0
-      for (const e of entries) {
-        if (!e.tag) { untagged++; continue }
-        const g = groups.get(e.tag) || { tag: e.tag, count: 0 }
-        g.count++
-        groups.set(e.tag, g)
-      }
-      list.push({ theme, file: join(root, f), updatedAt: statSync(join(root, f)).mtimeMs, groups: [...groups.values()], untagged })
+      const { front, entries } = readTheme(root, theme)
+      // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，
+      // String(active)==='false' 才算停用；缺省视为启用）
+      if (String(front?.active) === 'false') continue
+      // 最近日期取**文件 mtime**：实测条目行无 date 字段（shared/knowledge-core.mjs#parseEntryLine
+      // 只返回 tag/summary/full），frontmatter 也只有 name/description/active/归属字段
+      // ⇒ mtime 是唯一可得且如实的时间源（不臆造日期）。
+      const mtimeMs = statSync(themePath(root, theme)).mtimeMs
+      themes.push({ theme, count: entries.length, latest: new Date(mtimeMs).toISOString().slice(0, 10), mtimeMs })
     }
   } catch { return '' }
-  list.sort((a, b) => b.updatedAt - a.updatedAt)
-  const header = '\n\n【个人经验索引】过往会话沉淀的个人经验（按 主题|任务标签 分组，含未标注条目）。需要某任务的具体经验时，用 Read 读取该行末尾标注的文件（每行条目格式：- [会话|标签] 摘要 -- 全文），摘要判断相关性，全文含完整要点；与当前任务无关的标签无需读取。\n'
-  let out = header
-  const fmt = (ts) => new Date(ts).toISOString().slice(0, 10)
-  const lines = []
-  for (const item of list) {
-    for (const g of item.groups) lines.push(`- [${item.theme}|${g.tag}] ${g.count} 条 · 最近 ${fmt(item.updatedAt)} · ${item.file}`)
-    if (item.untagged > 0) lines.push(`- [${item.theme}] ${item.untagged} 条未标注经验 · 最近 ${fmt(item.updatedAt)} · ${item.file}`)
-  }
-  for (const line of lines) {
-    const lb = line.length + 1
-    if (out.length + lb > maxBytes) break
-    out += line + '\n'
-  }
-  return out
+  if (!themes.length) return ''
+  themes.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  const full = EL0_HEADER + renderThemeList(themes)
+  if (memoryBytes(full) <= maxBytes) return full
+  // 二级降级：只去"最近日期"（串头与主题名/条数一个都不丢）
+  return EL0_HEADER + renderThemeList(themes, { lean: true })
 }
 
 // 关键词触发抽调（M4）：按当前任务上下文关键词，从经验库匹配高相关条目并注入
@@ -129,34 +198,39 @@ export function buildMemoryIndex({ root = '', maxBytes = 4096 } = {}) {
 // 匹配维度：主题名 / 任务标签 / 摘要 / 全文。得分：标签命中 3 > 主题 2 > 摘要 2 > 全文 1。
 // 输出格式与【个人经验索引】一致的行内条目（-[主题|标签] 摘要 -- 全文），便于模型
 // 直接引用；超限时按相关度丢弃低分条目（同分按最近更新优先）。
-export function buildRelevantMemory({ root = '', keywords = [], maxBytes = 2048 } = {}) {
+export function buildRelevantMemory({ root = '', keywords = [], maxChars = null, maxBytes = null, query = '', topK = 0 } = {}) {
   if (!root || !existsSync(root) || !keywords || !keywords.length) return ''
-  const kws = keywords.map((k) => String(k).toLowerCase()).filter((k) => k.length >= 2)
+  const kws = normalizeKeywords(keywords)
   if (!kws.length) return ''
+  // ★★ 2026-09-30 统一（本文件头「经验条目级召回」的 A 路）：评分/排序/渲染/预算口径
+  //   全部改由 `memory-rank.mjs`（唯一真源）提供，与 `graph.mjs#search`（B 路）**完全同质**。
+  //   改动前的本函数：仅关键词打分、预算按 UTF-8 字节、直接吐原始行 `it.text`。
+  //   实测缺陷：中文条目 665 字 ≈ 1995 字节，2048 字节预算下**一条都塞不下** ⇒ 经常整体返回空
+  //   （`['无限重渲染','回测'] → 0 条`，而单关键词 → 1 条）。
+  //   现改为：`0.7×向量 + 0.3×关键词`（无 idf 时自动退化为关键词）、预算按**字符**、
+  //   输出**重拼**的标准行（不再依赖历史遗留的行文本）。
   const items = []
   try {
-    for (const f of readdirSync(root).filter((x) => x.endsWith('.md'))) {
+    for (const f of listThemeFiles(root)) {
       const theme = f.slice(0, -3)
-      const { entries } = readTheme(root, theme)
-      for (const e of entries) {
-        const score = keywordScore({ ...e, theme }, kws)
-        if (score > 0) items.push({ theme, text: e.text, tag: e.tag, summary: e.summary, full: e.full, score })
-      }
+      const { front, entries } = readTheme(root, theme)
+      // A16：内核注入侧尊重 front.active（服务端 server/experience.mjs:101 早用此口径，
+      // String(active)==='false' 才算停用；缺省视为启用）
+      if (String(front?.active) === 'false') continue
+      for (const e of entries) items.push({ theme, tag: e.tag, summary: e.summary, full: e.full, text: e.text })
     }
   } catch { return '' }
-  items.sort((a, b) => b.score - a.score || b.summary.localeCompare(a.summary))
-  const header = '\n\n【相关经验抽调】根据当前任务关键词，以下过往经验与任务直接相关，可直接参考（格式：-[主题|标签] 摘要 -- 全文）：\n'
-  let out = header
-  const seen = new Set()
-  for (const it of items) {
-    if (seen.has(it.text)) continue
-    const line = it.text
-    const lb = line.length + 1
-    if (out.length + lb > maxBytes) break
-    seen.add(it.text)
-    out += line + '\n'
-  }
-  return out === header ? '' : out
+  // 预算单位：字符。`maxChars` 优先；只给旧参数 `maxBytes` 时**按同数值当字符**用
+  //   （兼容路径：数值不变但单位从严的字节改为字符 ⇒ 中文场景放宽约 3 倍，正是修掉"一条都塞不下"）。
+  // 预算解析走 memory-rank 的**唯一口径**（`Number(null)===0` 陷阱的教训见该函数注释：
+  // 我自己写的 `Number.isFinite(Number(maxChars))` 把"未传"当成 0，导致两条路同时返回空）。
+  const budget = resolveBudget({ maxChars, maxBytes })
+  return buildRelevantBlock(items, {
+    query: String(query || '').trim() || kws.join(' '),
+    keywords: kws,
+    maxChars: budget,
+    topK,                       // 0 = 不限（原语义）；>0 时封顶（与 graph 路径同一入口参数）
+  })
 }
 
 const DEFAULT_MARKERS = {
@@ -300,6 +374,9 @@ function allMarkers(markers) {
  *
  * 返回 `{ ok:true, theme, tag, warnings }` 或 `{ ok:false, error, message }`。
  */
+/**
+ * @param {{ text?: any, tag?: any, theme?: any, markers?: any }} [opts]
+ */
 export function validateAppendEntry({ text, tag = null, theme = null, markers = null } = {}) {
   const body = String(text ?? '').trim()
   if (!body) return { ok: false, error: 'empty', message: '经验正文为空' }
@@ -344,15 +421,19 @@ export function validateAppendEntry({ text, tag = null, theme = null, markers = 
  * `single:true` 即"该标签全库只出现 1 次" —— agent 写前看到它，就该考虑换个标签
  * 或接受这条经验会成为孤岛。
  */
-export function listMemoryTags(configDir) {
+export function listMemoryTags(configDir, { tagResolver = null } = {}) {
   const byTag = new Map()
   const themes = listMemoryThemes(memoryRoot(configDir))
   for (const theme of themes) {
     for (const e of readTheme(memoryRoot(configDir), theme).entries || []) {
       if (!e.tag) continue
-      const cur = byTag.get(e.tag)
+      // 【S2-D6 标签实体化】同 `listIndexTags`：被合并掉的写法折叠到规范名后再计数，使"合并后
+      // 标签变少"真的体现出来。`tagResolver` 缺省 null ⇒ 与今日逐字一致（零回归）；
+      // 经验条目行本身（`- [主题|tag] …`）**一个字节都不动**（不改写用户数据）。
+      const tag = (tagResolver ? tagResolver(e.tag) : null) || e.tag
+      const cur = byTag.get(tag)
       if (cur) cur.count += 1
-      else byTag.set(e.tag, { tag: e.tag, count: 1, theme })
+      else byTag.set(tag, { tag, count: 1, theme })
     }
   }
   const tags = [...byTag.values()]
@@ -379,4 +460,84 @@ export function listMemoryThemes(dir) {
   } catch {
     return []
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 经验沉淀指引（P2 待办 714：固化到 agentloop，单独跑内核也能保证运行）
+//
+// 为什么真源必须在内核里：原先这段指引**只存在于宿主**（server/experience.mjs），
+// 单独跑 kernel/cli.mjs 时没有任何东西告诉 agent 去沉淀 ⇒ 沉淀量近零（只剩启发式捕获，
+// 而它只认显式声明式强信号词）。把文本放内核 + 内核自己会注入，独立运行才真正可用。
+//
+// 为什么用 `--knowledge append` 而不是 Write/Edit：S6 既定设计
+// （docs/superpowers/specs/2026-09-14-knowledge-write-channel-design.md §6「变更 D」）。
+// 原文本要求 agent「用 Write/Edit 把经验写入 memory/personal」，但内核的写边界**刻意**不含
+// 记忆根（kernel/tools.mjs 的四条理由：知识库只读、防整体覆盖）⇒ 那条指令**必然被拒**，
+// 是条死指令（照着做 = 一次注定失败的 Write）。S6 的选择是改指令、不解锁写白名单
+// —— append 从结构上就满足「不允许整体覆盖经验库」的原防护意图。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 沉淀指引的**稳定标记**：内核据此判断「宿主已经注入过」，避免同一段话出现两次。 */
+export const SEDIMENT_MARKER = '【经验沉淀（静默，不询问用户）】'
+
+/** 主题词表（与 server/experience.mjs 的既有词表同源；库里取不到主题时的回落清单）。 */
+export const SEDIMENT_THEMES = [
+  'communication', 'code-style', 'workflow', 'finance', 'policy', 'project-application', 'office-docs',
+]
+
+/**
+ * 经验写入命令（供指引正文引用）。
+ * @param {string} [kernelCliPath] 宿主可传入**它实际启动的那个**内核入口（打包态可能在 kernel-dist/），
+ *   不传则用本模块自身所在的内核目录（独立运行时的正确值）。
+ */
+export function sedimentAppendCommand(kernelCliPath) {
+  const cli = kernelCliPath || join(fileURLToPath(new URL('.', import.meta.url)), 'cli.mjs')
+  // 正斜杠 + 引号：Bash 工具下 Windows 反斜杠会被当转义（`\U` 之类），路径也可能含空格
+  return `node "${String(cli).replace(/\\/g, '/')}" --knowledge append --theme <主题> --tag "<任务标签>" --text "<摘要> -- <全文>"`
+}
+
+/**
+ * 组装沉淀指引文本（宿主与内核**共用这一份**，杜绝两处漂移）。
+ * @param {object} [opts]
+ * @param {string[]} [opts.themes] 库里已有的主题名（取不到时回落 SEDIMENT_THEMES）
+ * @param {string} [opts.appendCmd] 写入命令（默认 sedimentAppendCommand()）
+ */
+export function buildSedimentInstruction({ themes = [], appendCmd = '' } = {}) {
+  const list = (themes && themes.length ? themes : SEDIMENT_THEMES).join('、')
+  const cmd = appendCmd || sedimentAppendCommand()
+  return [
+    '',
+    `${SEDIMENT_MARKER}当本次会话中出现以下情况时，用 Bash 执行下面的命令把经验追加到经验库：`,
+    '① 用户明确表达偏好（回复风格、汇报粒度、代码风格、工具选择）',
+    '② 业务事实（财务处理、政策解读、申报口径、项目要求等确定信息）',
+    '③ 问题-解决模式（本次解决的关键问题及其方案、预防建议）',
+    '④ 工作流心得（被验证有效的处理流程与验证习惯）',
+    '',
+    cmd,
+    '',
+    `--theme 从这些主题里选最贴合的：${list}（填错会被拒绝；拿不准就省略，由库按标签与内容归类）。`,
+    '--tag 填本次会话正在做的具体任务（如"成果转化材料"、"PS材料"、"RD立项报告"）；同一类任务复用同一标签便于按任务检索；无明确任务可省略。',
+    '--text 的格式固定为：<摘要> -- <全文>（**两个短横线**分隔，注意 --text 的值要整体用引号包住）。',
+    '摘要 = 一句话要点（首次阅读即判断相关性）；全文 = 完整经验（背景/关键步骤/坑与预防/验证方式）。摘要与全文都必须写，严禁只写摘要不写全文。',
+    '',
+    '追加本身按内容幂等（相同内容不会重复入库），无需先读文件；一条经验一次命令，不要批量拼在一起。',
+    '严禁写入密钥、密码、API token、身份证号、银行账号等敏感信息。',
+    '',
+    '★ 不要用 Write/Edit 去改经验库文件：记忆目录对写入工具是只读的（防整体覆盖），只有上面的 append 命令能写。',
+    '',
+  ].join('\n')
+}
+
+/** 确保经验目录存在（返回目录路径）。
+ *  为什么需要：`--knowledge append` 在「根目录原本不存在」时会被入口短路（防呆，避免误建目录）
+ *  ⇒ 独立跑内核时若从不创建该目录，指引里的命令会永远失败（又变成一条死指令）。
+ *  故内核在决定注入指引时**顺手把目录建好**，让指引自洽可执行。 */
+export function ensureMemoryRoot(configDir) {
+  const root = memoryRoot(configDir)
+  try {
+    mkdirSync(root, { recursive: true })
+  } catch {
+    /* 建不出来（权限/只读盘）不致命：指引仍会给出，只是 append 会失败并如实报错 */
+  }
+  return root
 }

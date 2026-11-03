@@ -9,7 +9,7 @@
 //   ⑤ 真进程链路：`--knowledge` 在**格式校验之后**，故必须带
 //      `--output-format stream-json --input-format stream-json`（S1 踩过的坑，用例锁死）。
 //
-// 隔离纪律：mkdtempSync 临时目录；真进程用例走 PONOS_HOME（并清掉 CLAUDE_CONFIG_DIR，
+// 隔离纪律：mkdtempSync 临时目录；真进程用例走 PONOS_HOME（并清掉 PONOS_CONFIG_DIR，
 // 防宿主环境把它指到真实库），**不起 bridge、不联网**。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -148,7 +148,7 @@ test('真进程链路：带 I/O 格式旗标可用；不带则被格式校验拦
   try {
     const id = await firstBlockId(dir)
     const env = { ...process.env, PONOS_HOME: dir }
-    delete env.CLAUDE_CONFIG_DIR // 防宿主环境把 configDir 指到真实库
+    delete env.PONOS_CONFIG_DIR // 防宿主环境把 configDir 指到真实库
     const fmt = ['--output-format', 'stream-json', '--input-format', 'stream-json']
     const args = ['--knowledge', 'related', '--id', id]
 
@@ -158,9 +158,19 @@ test('真进程链路：带 I/O 格式旗标可用；不带则被格式校验拦
     assert.equal(out.blockId, id)
     assert.ok(out.count >= 3, '真进程路径也要能拿到锚点')
 
+    // ★ 2026-10-21 决定（kernel/cli.mjs:449-466 注释为准）：格式门禁**下移到子命令短路之后**。
+    //   理由：`--knowledge` / `--process` / `--usage|--audit|--agents` 是「跑一次、stdout 一行 JSON」，
+    //   从不读 stdin 流 ⇒ 要求 stream-json I/O 对它们毫无意义；门禁先跑会把它们永远拦死，
+    //   连内核自己注入的沉淀指令（memory.mjs#sedimentCommand，裸 `--knowledge append`）都是死指令。
+    //   ⇒ 缺旗标时一次性子命令**照常执行**（本断言）；被拦的是长驻 loop（下一段断言）。
     const noFmt = spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf-8' })
-    assert.equal(noFmt.status, 2, '缺 I/O 格式旗标必须在格式校验处被拦（--knowledge 短路在其之后）')
-    assert.match(noFmt.stderr, /only stream-json I\/O format/)
+    assert.equal(noFmt.status, 0, `缺格式旗标对一次性子命令不再算错（门禁已下移）stderr=${noFmt.stderr}`)
+    assert.equal(JSON.parse(noFmt.stdout).blockId, id, '裸调用也要跑出同一个结果，不只是"没报错"')
+
+    // 门禁本身必须还在（否则上面那条就成了"门禁被拆掉也没人发现"）：裸调用无子命令 ⇒ 走长驻 loop
+    const bare = spawnSync(process.execPath, [cli, '--prompt', 'x'], { env, encoding: 'utf-8', timeout: 30000 })
+    assert.equal(bare.status, 2, '长驻 loop 缺 I/O 格式旗标必须被拦（门禁只守这条路）')
+    assert.match(bare.stderr, /only stream-json I\/O format/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -228,7 +238,7 @@ test('真进程链路：--doc 与 graph --related 必须真的穿过 CLI 管道�
   try {
     await runKnowledgeCommand({ op: 'reindex', configDir: dir })
     const env = { ...process.env, PONOS_HOME: dir }
-    delete env.CLAUDE_CONFIG_DIR
+    delete env.PONOS_CONFIG_DIR
     const fmt = ['--output-format', 'stream-json', '--input-format', 'stream-json']
 
     // ① related --doc：GUI「进入文档」后的批量锚点口

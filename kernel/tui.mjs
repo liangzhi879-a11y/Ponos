@@ -59,9 +59,9 @@ export function loadProviders(env = process.env) {
     return null
   }
 }
-// 启动默认模型：env ANTHROPIC_MODEL 优先，其次 providers.json 当前激活 provider，最后内置兜底
+// 启动默认模型：env PONOS_MODEL 优先，其次 providers.json 当前激活 provider，最后内置兜底
 export function defaultModel(env = process.env) {
-  if (env.ANTHROPIC_MODEL) return env.ANTHROPIC_MODEL
+  if (env.PONOS_MODEL) return env.PONOS_MODEL
   const cfg = loadProviders(env)
   if (cfg) {
     const active = cfg.providers.find((p) => p.id === cfg.activeId) || cfg.providers[0]
@@ -358,7 +358,9 @@ export async function scanSessions({ configDir, cwd, limit = 20 }) {
         if (!t) continue
         let e
         try { e = JSON.parse(t) } catch { continue }
-        if (e.type === 'meta' || !e.message || typeof e.message !== 'object') continue
+        // thinking 与 meta 同属"落盘可见、不计入消息数"的非对话条目（thinking 占 seq
+        // 但只是推理痕迹），计入会让会话选择器的条数被思考块灌水。
+        if (e.type === 'meta' || e.type === 'thinking' || !e.message || typeof e.message !== 'object') continue
         count++
         if (e.timestamp && e.timestamp > lastTs) lastTs = e.timestamp
         if (!preview && e.message.role === 'user') {
@@ -491,13 +493,13 @@ function main() {
   if (args.mock) process.env.PONOS_MOCK_COMPACT_RESPONSE = '1'
   if (!args.mock) {
     if (process.env.PONOS_MOCK_API === '1') { console.error('错误: PONOS_MOCK_API=1 会走 mock，请清除或加 --mock'); process.exit(2) }
-    if (!process.env.ANTHROPIC_BASE_URL) { console.error('错误: 需要 ANTHROPIC_BASE_URL env（或加 --mock）'); process.exit(2) }
+    if (!process.env.PONOS_BASE_URL) { console.error('错误: 需要 PONOS_BASE_URL env（或加 --mock）'); process.exit(2) }
   }
   if (args.theme === 'light') { themeName = 'light'; theme = THEMES.light }
   mkdirSync(args.dir, { recursive: true })
   const DIR = args.dir
   const MODEL = defaultModel()
-  const CONTEXT_WINDOW = Number(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || 1_000_000) || 1_000_000
+  const CONTEXT_WINDOW = Number(process.env.PONOS_AUTO_COMPACT_WINDOW || 1_000_000) || 1_000_000
   const isTui = !!(process.stdin.isTTY && process.stdout.isTTY)
 
   // ---------- 状态 ----------
@@ -521,8 +523,8 @@ function main() {
   let historyIdx = -1
   let historyTemp = ''
   let scrollOffset = 0 // 0 = 跟随底部
-  // 思考深度档位（对齐 Claude Code /effort）：auto 默认 = 模型原生自适应
-  let effort = process.env.CLAUDE_CODE_EFFORT_LEVEL || process.env.PONOS_REASONING_EFFORT || 'auto'
+  // 思考深度档位（自有统一档位）：auto 默认 = 模型原生自适应
+  let effort = process.env.PONOS_REASONING_EFFORT || 'auto'
   let toolExpanded = new Set()
   let toolSeqMap = new Map()
   // tool_use_id → 卡片序号：内核的 tool_result 帧（protocol.mjs wire.toolResult）
@@ -1186,7 +1188,7 @@ function main() {
     const lines = [`当前模型：${current}`]
     const cfg = loadProviders()
     if (!cfg) {
-      lines.push('未找到 providers.json（' + join(resolveConfigDir(process.env), 'providers.json') + '），仅支持 env ANTHROPIC_MODEL 指定模型')
+      lines.push('未找到 providers.json（' + join(resolveConfigDir(process.env), 'providers.json') + '），仅支持 env PONOS_MODEL 指定模型')
       pushMessage({ kind: 'result', text: lines.join('\n') })
       render()
       return

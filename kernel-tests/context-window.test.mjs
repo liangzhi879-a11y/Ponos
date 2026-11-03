@@ -9,15 +9,29 @@ import assert from 'node:assert/strict'
 import { contextWindowFor, clampOutputBudgetForWindow, LOCAL_DEFAULT_WINDOW, DEFAULT_WINDOW } from '../kernel/context.mjs'
 
 test('contextWindowFor：内置模型表优先于注入（表=事实窗口，防 provider 手配虚高）', () => {
-  // 2026-09-11：deepseek provider 手配 1M 在 flash（真实 200K）上虚高的根因修复——
-  // 已知模型以表为准，未知模型才尊重注入值
-  assert.equal(contextWindowFor('deepseek-v4-flash', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }), 200_000, 'flash 表 200K 压过注入 1M')
-  assert.equal(contextWindowFor('unknown-model', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '131072', PONOS_PROVIDER_PROFILE: 'local' }), 131072, '未知模型注入优先')
-  assert.equal(contextWindowFor('MiniMax-M3[1m]', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }), 1_000_000, '带后缀不命中表 → 注入生效')
+  // 2026-09-11：deepseek provider 手配 1M 在 flash（当时真实 200K）上虚高的根因修复——
+  // 已知模型以表为准，未知模型才尊重注入值。
+  // ★ 2026-10-19：deepseek-v4-flash 的表值已从 200_000 更新为 1_000_000（DeepSeek 官方
+  //   《模型 & 价格》脚注①：旧名仍可调用但对应模型已下线，请求由 DeepSeek-V4.1-Flash-1017
+  //   提供服务，上下文 1M）⇒ 本条改用 **MiniMax-M3 的表值 262_144** 来钉"表压过注入"这条判据，
+  //   不再依赖 deepseek 的具体数字（否则每换一次模型事实就要改一次断言，判据本身反而失焦）。
+  assert.equal(contextWindowFor('MiniMax-M3', { PONOS_AUTO_COMPACT_WINDOW: '1000000' }), 262_144,
+    '表值 262K 必须压过注入 1M（判据本体：已知模型不信手配值）')
+  assert.equal(contextWindowFor('unknown-model', { PONOS_AUTO_COMPACT_WINDOW: '131072', PONOS_PROVIDER_PROFILE: 'local' }), 131072, '未知模型注入优先')
+  assert.equal(contextWindowFor('MiniMax-M3[1m]', { PONOS_AUTO_COMPACT_WINDOW: '1000000' }), 1_000_000, '带后缀不命中表 → 注入生效')
 })
 
 test('contextWindowFor：内置模型表精确命中', () => {
-  assert.equal(contextWindowFor('deepseek-v4-flash', {}), 200_000)
+  // ★ 2026-10-19 事实更新（依据：DeepSeek 官方《模型 & 价格》
+  //   https://api-docs.deepseek.com/zh-cn/quick_start/pricing/）：
+  //     deepseek-flash      = DeepSeek-V4.1-Flash-1017，上下文 **1M**
+  //     deepseek-v4-flash   = 旧名，官方脚注①：对应模型已下线，请求由 V4.1-Flash-1017 提供服务
+  //                           ⇒ 实际窗口同样是 1M（原记 200K 是下线前的事实）
+  //     deepseek-v4-pro     = DeepSeek-V4-Pro-0813，上下文 **1M**（未变）
+  //   ★ 名字必须逐条显式断言：deepseek-flash 是**现行**官方名，此前表里没有它 ⇒ 回落到
+  //     provider 手配值（"碰巧对了"）；这一条把它钉成**事实**，不再依赖配置是否手误。
+  assert.equal(contextWindowFor('deepseek-flash', {}), 1_000_000, '现行官方名，1M')
+  assert.equal(contextWindowFor('deepseek-v4-flash', {}), 1_000_000, '旧名已指向 V4.1-Flash-1017，同为 1M')
   assert.equal(contextWindowFor('deepseek-v4-pro', {}), 1_000_000)
   assert.equal(contextWindowFor('MiniMax-M3', {}), 262_144)
 })
@@ -32,9 +46,9 @@ test('contextWindowFor：cloud/未知画像未命中表 → 200K 默认（既有
 })
 
 test('contextWindowFor：注入 0/NaN/非法值视为未注入（回落表/画像默认）', () => {
-  assert.equal(contextWindowFor('m', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '0', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
-  assert.equal(contextWindowFor('m', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 'abc', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
-  assert.equal(contextWindowFor('deepseek-v4-flash', { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '0' }), 200_000, '注入 0 时表仍生效')
+  assert.equal(contextWindowFor('m', { PONOS_AUTO_COMPACT_WINDOW: '0', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
+  assert.equal(contextWindowFor('m', { PONOS_AUTO_COMPACT_WINDOW: 'abc', PONOS_PROVIDER_PROFILE: 'cloud' }), DEFAULT_WINDOW)
+  assert.equal(contextWindowFor('deepseek-v4-flash', { PONOS_AUTO_COMPACT_WINDOW: '0' }), 1_000_000, '注入 0 时表仍生效（表值见上条测试的事实说明）')
 })
 
 test('clampOutputBudgetForWindow：预算装得下不动', () => {

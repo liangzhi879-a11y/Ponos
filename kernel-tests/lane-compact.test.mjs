@@ -57,8 +57,12 @@ function makeEnv({ withCtx }) {
   return { events, engine, store, dir, laneFile, waitNotif, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('零回归锁②：PONOS_LANE_COMPACT 未设 → lane 无压缩（transcript 无 compaction 条目）', async () => {
-  delete process.env.PONOS_LANE_COMPACT
+// ★ 2026-10-20（T2.4，口径反转）：lane 压缩默认从**关**改为**开**（`PONOS_LANE_COMPACT !== '0'`）。
+//   为什么反转：lane 一旦超窗，**不压缩就是直接报错**（上下文溢出）——那比"多一次压缩调用"
+//   严重得多（用户看到的是子 Agent 失败）。压缩是超窗时的唯一出路，不该要用户先想起开开关。
+//   原来这条用例锁的是"未设 ⇒ 不压缩"；现在锁"显式设 0 ⇒ 不压缩"（同一条约束，挪到它仍成立的档）。
+test('★ T2.4 关闭态：PONOS_LANE_COMPACT=0 → lane 无压缩（transcript 无 compaction 条目）', async () => {
+  process.env.PONOS_LANE_COMPACT = '0'
   process.env.PONOS_MOCK_LANE_ITER_N = '0' // [mock:lane-iter] 轮次计数清零（同 engine-lane-heal.test.mjs）
   const env = makeEnv({ withCtx: true })
   try {
@@ -71,7 +75,31 @@ test('零回归锁②：PONOS_LANE_COMPACT 未设 → lane 无压缩（transcrip
     assert.ok(notif)
     assert.equal(notif.status, 'completed')
     const text = readFileSync(env.laneFile(taskId), 'utf-8')
-    assert.ok(!text.includes('"kind":"compaction"'), '关闭态 lane 不应压缩')
+    assert.ok(!text.includes('"kind":"compaction"'), '★ 显式关闭态 lane 不应压缩（开关必须真的有效）')
+  } finally {
+    delete process.env.PONOS_LANE_COMPACT
+    env.cleanup()
+  }
+})
+
+test('★ T2.4 默认开：不设 PONOS_LANE_COMPACT → lane 具备压缩能力（超窗不再直接报错）', async () => {
+  delete process.env.PONOS_LANE_COMPACT
+  process.env.PONOS_MOCK_LANE_ITER_N = '0'
+  const env = makeEnv({ withCtx: true })
+  try {
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:lane-iter]', run_in_background: true },
+      { toolUseId: 'tool_use_lc_default' },
+    )
+    const taskId = String(r.content).match(/task_id: ([0-9a-f-]+)/)?.[1]
+    const notif = await env.waitNotif(taskId)
+    assert.ok(notif)
+    assert.equal(notif.status, 'completed')
+    // 默认态下"具备压缩能力"的可证形态 = 走到了压缩判定（未触发压缩时不落 compaction 条目，
+    // 故不能断言条目存在）。这里锁的是**开关求值**：源码判据 `!== '0'`，与关闭态形成对照。
+    const src = readFileSync(new URL('../kernel/engine.mjs', import.meta.url), 'utf-8')
+    assert.match(src, /const LANE_COMPACT_ENABLED = process\.env\.PONOS_LANE_COMPACT !== '0'/,
+      '★ 默认必须是开（!== "0"）；改回 === "1" 会让"超窗 lane 直接报错"的老问题原样复活')
   } finally { env.cleanup() }
 })
 

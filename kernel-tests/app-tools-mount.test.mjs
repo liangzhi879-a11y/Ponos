@@ -4,7 +4,7 @@
 // 宿主 → 结果回填」这条链跨 cli.mjs（视图函数挂载）/ engine.mjs（桥挂起）/ bridge 路由
 // 三层，任何一层漏接都只有"在真进程里跑一次"才看得出来（源码字符串断言查不出来）。
 //
-// 手法：本机起一个假 Anthropic 端点（SSE），内核经 ANTHROPIC_BASE_URL 直连它——
+// 手法：本机起一个假 Anthropic 端点（SSE），内核经 PONOS_BASE_URL 直连它——
 //   ① 从内核 init 帧的 tools 与真实请求体的 tools 断言 app_* 工具**确实进了工具表**；
 //   ② 假端点回一个 app_* 的 tool_use，内核必然发出 bridge_request(route=app)
 //      （= bridge 侧要转给主进程执行器的那条消息），测试扮演 bridge 回写 app_response；
@@ -20,9 +20,22 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appToolName } from '../kernel/app-naming.mjs'
 
-const KERNEL_CLI = process.env.YFW_TEST_KERNEL_CLI || fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+const KERNEL_CLI = process.env.PONOS_TEST_KERNEL_CLI || fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const SESSION = 'app-mount-0000-0000-0000-000000000001'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Windows：刚 kill 的子进程仍持有 cwd/handle 时 rmSync 会 EPERM（内核工作根就在临时目录里）。
+// 并发跑（--test-concurrency=4）时子进程退出更慢，这个竞态会让用例在 finally 里**假失败**——
+// 实测在本仓库全量跑时命中过一次（断言全过、仅清理抛 EPERM）。重试兜底是本仓库既有做法
+// （见 kernel-tests/app-page-scope.test.mjs、server/answer-resume.test.mjs）。
+function rmSyncRetry(path, attempts = 40) {
+  for (let i = 0; i < attempts; i++) {
+    try { rmSync(path, { recursive: true, force: true }); return } catch (e) {
+      if (i === attempts - 1) throw e
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    }
+  }
+}
 
 const READ_CMD = { action: 'queryOrder', title: '查询订单', kind: 'read', params: [{ name: 'orderId', type: 'string', required: true }], steps: [{ act: 'goto', url: '/' }] }
 
@@ -89,11 +102,11 @@ function spawnKernel(dir, port, { answerApp }) {
     env: {
       ...process.env,
       PONOS_MOCK_API: '', // 本测试走真实 HTTP 路径（假端点在本地）
-      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-      ANTHROPIC_AUTH_TOKEN: 'test-token',
-      ANTHROPIC_MODEL: 'test-model',
-      CLAUDE_CONFIG_DIR: dir,
-      YFW_HOME: dir,
+      PONOS_BASE_URL: `http://127.0.0.1:${port}`,
+      PONOS_AUTH_TOKEN: 'test-token',
+      PONOS_MODEL: 'test-model',
+      PONOS_CONFIG_DIR: dir,
+      PONOS_HOME: dir,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -178,7 +191,7 @@ test('绑定到本会话 → app_* 工具真的进了工具表（init + 请求�
   } finally {
     try { k.proc.kill() } catch { /* 已退出 */ }
     await api.close()
-    rmSync(dir, { recursive: true, force: true })
+    rmSyncRetry(dir)
   }
 })
 
@@ -201,6 +214,6 @@ test('未绑定本会话 → 工具表里没有任何 app_*，也不发 route=ap
   } finally {
     try { k.proc.kill() } catch { /* 已退出 */ }
     await api.close()
-    rmSync(dir, { recursive: true, force: true })
+    rmSyncRetry(dir)
   }
 })

@@ -79,7 +79,17 @@ test('tools：calls/distinct/errors 聚合，firstRef 取自首条错误结果�
   const r = projectSession('sess-1', list)
   assert.equal(r.tools.calls, 3)
   assert.equal(r.tools.distinct, 2)
-  assert.deepEqual(r.tools.errors, [{ tool: 'Bash', count: 2, firstRef: { sessionId: 'sess-1', seq: 3, ts: at(2) } }])
+  // ★ 2026-10-17（EVO-08）：errors 每条新增 `commandNonZero` / `toolFault` 两个细分子段
+  //   （`count` 语义不变 = 全部 is_error）。此处夹具的 toolResult 内容不是 Bash 的
+  //   `退出码 N` 形状 ⇒ 一律归为 toolFault。**这不是放宽断言**：原断言的三项（tool/count/firstRef）
+  //   全部保留并逐项比对，只是**承认**新增字段是设计的一部分（同 diffs / timeout 的既有做法）。
+  assert.deepEqual(r.tools.errors, [{
+    tool: 'Bash',
+    count: 2,
+    commandNonZero: 0,
+    toolFault: 2,
+    firstRef: { sessionId: 'sess-1', seq: 3, ts: at(2) },
+  }])
 })
 
 test('tools.callsByTool（2026-10-10 加）：按工具分组的调用数 = 错误率的分母', () => {
@@ -105,6 +115,29 @@ test('tools.callsByTool：无 tool_use ⇒ 空数组（不造数据）；join �
   // tool_result 无对应 tool_use ⇒ tool_use 侧仍登记为 'unknown'（分子分母同源，均由 tool_use 决定）
   const r = projectSession('sess-4', [userText('做Z', 1, 0), toolResult('ghost', true, 2, 1)])
   assert.deepEqual(r.tools.callsByTool, [])
+})
+
+// ── tools.sequence（A2/OPP-8：熟练模式的指纹；2026-10-14 从"集合"加强为"保序序列"）──────
+// ★ 语义变更留痕：原口径是"工具名升序去重"（集合）⇒ 丢顺序、丢结构，任何编码任务都用的
+//   {Read,Edit,Grep} 塌缩成同一指纹 ⇒ 三个会话就误报"可固化成技能"（用户实测反馈）。
+//   新口径 = 按调用顺序、只去**连续**重复。下面两条用例逐条钉住这两个语义点。
+
+test('tools.sequence：**保序** —— 不同顺序 ⇒ 不同指纹（集合口径会把两者混为一谈）', () => {
+  const r1 = projectSession('s1', [userText('做X', 1, 0), asst([tu('a', 'Read', {}), tu('b', 'Edit', {})], 2, 1)])
+  assert.equal(r1.tools.sequence, 'Read>Edit')
+  const r2 = projectSession('s2', [userText('做Y', 1, 0), asst([tu('c', 'Edit', {}), tu('d', 'Read', {})], 2, 1)])
+  assert.equal(r2.tools.sequence, 'Edit>Read', '顺序不同 ⇒ 指纹不同（结构才是"编排"的本体）')
+})
+
+test('tools.sequence：只去**连续**重复 —— 连用折叠，隔开出现的同一工具必须保留', () => {
+  const r1 = projectSession('s3', [userText('做Z', 1, 0), asst([tu('a', 'Read', {}), tu('b', 'Read', {}), tu('c', 'Read', {}), tu('d', 'Edit', {})], 2, 1)])
+  assert.equal(r1.tools.sequence, 'Read>Edit', '连用多次只是重复劳动 ⇒ 折叠（次数在 callsByTool 里）')
+  const r2 = projectSession('s4', [userText('做W', 1, 0), asst([tu('e', 'Read', {}), tu('f', 'Edit', {}), tu('g', 'Read', {})], 2, 1)])
+  assert.equal(r2.tools.sequence, 'Read>Edit>Read', '隔开出现的同一工具是真实结构差异 ⇒ 保留')
+})
+
+test('tools.sequence：无 tool_use ⇒ 空串（不造数据）', () => {
+  assert.equal(projectSession('s5', [userText('只说话', 1, 0)]).tools.sequence, '')
 })
 
 test('tools.errors：join 不到 tool_use 的结果落 unknown（不伪造工具名）', () => {
@@ -326,4 +359,68 @@ test('buildEvolutionReport：v/generatedAt/window/records/summary 齐全', () =>
   assert.equal(rep.records.length, 1)
   assert.equal(rep.summary.totals.sessions, 1)
   assert.equal(rep.records[0].v, TASK_RECORD_V)
+})
+
+// ── models：按模型分段的调用/错误事实（OPP-10 的判据来源，2026-10-19 additive）────
+// 为什么要这段：`usage.byModel` 只有 token/成本，答不了"这个模型是不是更容易把活干错"。
+// OPP-10 需要分母（该模型下的工具调用数）与分子（其中失败数），此处钉住两者**真的能对上**。
+
+test('★ models：tool_use 按条目自己的 model 归桶，tool_result 按 tool_use_id 回指到同一模型', () => {
+  const list = [
+    userText('做X', 1, 0),
+    asst([tu('a1', 'Bash', {}), tu('a2', 'Read', {})], 2, 1, 'model-a'),
+    toolResult('a1', true, 3, 2),      // a1 失败 ⇒ 记到 model-a
+    asst([tu('b1', 'Grep', {})], 4, 3, 'model-b'),
+    toolResult('b1', false, 5, 4),     // b1 成功 ⇒ model-b errors 不增
+    asst([tu('a3', 'Edit', {})], 6, 5, 'model-a'),
+    toolResult('a3', false, 7, 6),
+  ]
+  const r = projectSession('sess-1', list)
+  assert.deepEqual(r.models, [
+    { model: 'model-a', calls: 3, errors: 1 },
+    { model: 'model-b', calls: 1, errors: 0 },
+  ], '按模型名升序（确定性）；失败归到产生该 tool_use 的模型，而不是"最后一个模型"')
+})
+
+test('★ models：缺 model 的条目落 unknown（不猜）；无工具调用的会话 ⇒ models 为空数组', () => {
+  const noModel = [
+    userText('做X', 1, 0),
+    entry({ type: 'assistant', message: { role: 'assistant', content: [tu('x1', 'Bash', {})] }, surfaceOp: 'append' }, { seq: 2, min: 1 }),
+    toolResult('x1', true, 3, 2),
+  ]
+  assert.deepEqual(projectSession('sess-1', noModel).models, [{ model: 'unknown', calls: 1, errors: 1 }],
+    '没有 message.model 时必须落 unknown —— 编一个模型名就是造数据')
+
+  const pureText = [userText('问', 1, 0), asst([text('答')], 2, 1)]
+  assert.deepEqual(projectSession('sess-1', pureText).models, [],
+    '纯文本会话没有可比的分母 ⇒ 空数组（不是 null：这里确实"没有模型调用"而不是"没测到"）')
+})
+
+test('★ models：tool_result 找不到对应 tool_use 时落 unknown 的 errors（不静默丢）', () => {
+  const list = [userText('做X', 1, 0), asst([tu('a1', 'Bash', {})], 2, 1, 'model-a'), toolResult('ghost', true, 3, 2)]
+  const r = projectSession('sess-1', list)
+  assert.deepEqual(r.models, [
+    { model: 'model-a', calls: 1, errors: 0 },
+    { model: 'unknown', calls: 0, errors: 1 },
+  ], 'join 不到也要如实记在 unknown 上（静默丢等于让错误率偏低 = 做出"模型很健康"的假结论）')
+})
+
+test('★ models 与 tools.errors 总数一致（两套分段不能各自漂移）', () => {
+  const list = [
+    userText('做X', 1, 0),
+    asst([tu('a1', 'Bash', {}), tu('a2', 'Read', {})], 2, 1, 'model-a'),
+    toolResult('a1', true, 3, 2),
+    asst([tu('b1', 'Grep', {})], 4, 3, 'model-b'),
+    toolResult('b1', true, 5, 4),
+  ]
+  const r = projectSession('sess-1', list)
+  const byModel = r.models.reduce((n, m) => n + m.errors, 0)
+  const byTool = r.tools.errors.reduce((n, e) => n + e.count, 0)
+  assert.equal(byModel, byTool, '同一次统计的两种切法，分子必须相等（否则就是漏算/重算）')
+  assert.equal(r.models.reduce((n, m) => n + m.calls, 0), r.tools.calls, '分母同理')
+})
+
+test('★ TASK_RECORD_V：新增 models 字段 ⇒ 版本已升到 3（形状变更必须升版）', () => {
+  assert.equal(TASK_RECORD_V, 3)
+  assert.equal(projectSession('sess-1', [userText('问', 1, 0)]).v, TASK_RECORD_V)
 })

@@ -14,6 +14,12 @@
 import { request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import { parseFrontmatter, parseYamlList } from './skills.mjs'
+// AI-03 出网目标收敛：判据唯一实现在 shared/address-policy.mjs（见该文件头）。
+// ★ 本通道为什么要**强制 https** 且逐 URL 过闸：市场地址来自环境变量
+//   `PONOS_SKILL_MARKETS`（`name=url@repoBase`），是可被"顺手注入"的机器配置面，不是用户逐次点击；
+//   而 marketplace.json 里的 `skills`/`source` 又由**对端内容**决定 ⇒ 恶意市场可把 SKILL.md 指到
+//   `http://169.254.169.254/latest/meta-data/`。故入口（市场地址）与派生地址（SKILL.md/API）都要过。
+import { assertAllowedUrl } from '../shared/address-policy.mjs'
 
 // ── 数据源表 ──────────────────────────────────────────────────────────────────
 // env 扩展：PONOS_SKILL_MARKETS="name=url@repoBase,name2=url2@repoBase2"（追加/覆盖同名）
@@ -45,7 +51,17 @@ export function setTestFetcher(fn) { fetcher = fn || fetchText }
 export function clearMarketCache() { marketCache.clear() }
 
 // ── 零依赖 HTTP 抓取（node:https，与 tools.mjs fetchUrl 同风格） ──────────────
-export function fetchText(url, { timeoutMs = 8000, maxBytes = 64 * 1024 } = {}) {
+// ★ AI-03：**每一跳**过闸（本函数内部也跟随 3xx，若只在调用处判一次，302 就能把请求带去内网）。
+//   被拒时返回 `{ ok:false, status:0, egressDenied:<可读原因> }` —— 调用方按普通失败处理，
+//   但排障时能从 `egressDenied` 看出"不是市场挂了，是被出网策略拦了"。
+export async function fetchText(url, opts = {}) {
+  const gate = await assertAllowedUrl(url, { channel: '技能市场请求', requireHttps: true })
+  if (!gate.ok) return { ok: false, status: 0, text: '', egressDenied: gate.message }
+  return rawFetchText(url, opts)
+}
+
+/** 真正发请求的那一跳（重定向通过递归 `fetchText` 回到闸上） */
+function rawFetchText(url, { timeoutMs = 8000, maxBytes = 64 * 1024 } = {}) {
   return new Promise((resolvePromise) => {
     let u
     try { u = new URL(String(url || '')) } catch { return resolvePromise({ ok: false, status: 0, text: '' }) }
@@ -158,6 +174,9 @@ export function parseMarketplace(market, jsonText) {
 
 // ── 市场列表拉取（缓存） ──────────────────────────────────────────────────────
 const marketCache = new Map() // url -> { ts, items }
+/**
+ * @param {{ sources?: any }} [opts]
+ */
 export async function discoverMarketSkills({ sources } = {}) {
   const markets = resolveMarkets()
   const want = sources ? markets.filter((m) => sources.split(',').map((s) => s.trim()).includes(m.name)) : markets
@@ -166,6 +185,11 @@ export async function discoverMarketSkills({ sources } = {}) {
   for (const market of want) {
     const cached = marketCache.get(market.url)
     if (cached && Date.now() - cached.ts < MARKET_TTL) { skills.push(...cached.items); continue }
+    // ★ AI-03：市场地址先过出网目标策略（内网/回环默认拒绝，且本通道强制 https），
+    //   在**发请求之前**判 ⇒ 被拒时连一次 DNS/连接都不产生。拒绝原因回给调用方看，
+    //   不静默吞掉（否则模型只会看到"市场列表为空"而无从修正）。
+    const gate = await assertAllowedUrl(market.url, { channel: `技能市场「${market.name}」`, requireHttps: true })
+    if (!gate.ok) { failed.push({ source: market.name, reason: gate.message }); continue }
     // 社区市场 marketplace.json 可达 80KB+（GitHub raw CDN 首连慢），超时放宽 + 失败重试 1 次
     let r = await fetcher(market.url, { timeoutMs: 20000, maxBytes: 3 * 1024 * 1024 })
     if (!r.ok) r = await fetcher(market.url, { timeoutMs: 20000, maxBytes: 3 * 1024 * 1024 })
@@ -247,7 +271,13 @@ function frontmatterYaml(md) { return String(md || '').match(/^---\r?\n([\s\S]*?
 function triggersOf(md) { return parseYamlList(frontmatterYaml(md), 'triggers') }
 
 async function digItem(item, tokens) {
+  // ★ AI-03：深挖地址由**市场内容**派生（`item.url` / `item.skillsUrl` / `rawUrl(repoBase,…)`），
+  //   不是用户输入 ⇒ 恶意 marketplace.json 能把这里指到内网。故逐条过闸（不通过就跳过该候选，
+  //   不把整次搜索打成失败：一个市场投毒不该让正常候选全军覆没）。
+  /** @param {string} url */
+  const allowed = async (url) => (await assertAllowedUrl(url, { channel: '技能市场条目', requireHttps: true })).ok
   if (item.kind === 'direct') {
+    if (!(await allowed(item.url))) return null
     const r = await fetcher(item.url, { timeoutMs: 8000, maxBytes: SKILL_MD_MAX })
     if (!r.ok) return null
     const fm = parseFrontmatter(r.text)
@@ -258,6 +288,7 @@ async function digItem(item, tokens) {
   }
   // plugin-dir：枚举 <source>/skills/ 子目录
   if (!item.skillsUrl) return null
+  if (!(await allowed(item.skillsUrl))) return null
   const api = await fetcher(item.skillsUrl, { timeoutMs: 8000, maxBytes: 512 * 1024 })
   if (!api.ok) return null
   let listing
@@ -268,6 +299,7 @@ async function digItem(item, tokens) {
   for (const sub of subDirs) {
     const url = rawUrl(item.repoBase, posixJoin(item.sourceDir, 'skills', sub))
     if (!url) continue
+    if (!(await allowed(url))) continue
     const r = await fetcher(url, { timeoutMs: 8000, maxBytes: SKILL_MD_MAX })
     if (!r.ok) continue
     const fm = parseFrontmatter(r.text)
@@ -280,6 +312,9 @@ async function digItem(item, tokens) {
 }
 
 // ── 主入口：搜索技能 ──────────────────────────────────────────────────────────
+/**
+ * @param {{ query?: any, limit?: number, source?: any }} [opts]
+ */
 export async function searchSkills({ query, limit = 8, source } = {}) {
   const q = String(query || '').trim()
   if (!q) return { results: [], failed: [], error: 'query 参数缺失' }

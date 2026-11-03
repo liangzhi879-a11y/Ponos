@@ -53,6 +53,9 @@ test('不误伤既有工具分类', () => {
   assert.equal(classifyTool('Read'), 'read')
   assert.equal(classifyTool('Glob'), 'read')
   assert.equal(classifyTool('Write'), 'write')
+  // 技能工坊 C1（2026-09-21）：SkillDraft 与 Write/Edit 同档（写盘工具必须登记 WRITE_TOOLS；
+  // 漏登记 ⇒ unknown，而本仓 unknown 的允许档同为 'loose' —— 见本文件头注「'write' 类不能用作兜底目标」）
+  assert.equal(classifyTool('SkillDraft'), 'write')
   assert.equal(classifyTool('Bash'), 'exec')
   assert.equal(classifyTool('WebFetch'), 'net')
   assert.equal(classifyTool('未知工具xyz'), 'unknown')

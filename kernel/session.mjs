@@ -2,7 +2,7 @@
 // ---------------------------------------------------------------------------
 // transcript 文件位置与 server/transcript.mjs 的约定一致（跨层契约，GUI 直接
 // 经 bridge /transcript/load 读取）：
-//   <CLAUDE_CONFIG_DIR ?? ~/.ponos>/projects/<sanitize(cwd)>/<sessionId>.jsonl
+//   <PONOS_CONFIG_DIR ?? ~/.ponos>/projects/<sanitize(cwd)>/<sessionId>.jsonl
 // 每行一个 NDJSON entry。entry 在既有 { type, id, timestamp, message } 之上扩展
 // 可选字段（旧文件可加载）：
 //   - seq：日志侧单调追加序号（跨进程稳定标识；旧 transcript 加载时按序补齐）
@@ -14,11 +14,15 @@
 // 加载语义：逐行流式读（超大 transcript 不整文件进内存）→ 依序重建 seq +
 // surface → 孤儿 compaction/start（无配对 summary）直接回滚忽略 → maxEntries
 // 超限时截断到近窗口（保留尾部）。
-import { existsSync, createReadStream, appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync, openSync, readSync, closeSync, truncateSync } from 'node:fs'
+import { existsSync, createReadStream, appendFileSync, mkdirSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync, truncateSync } from 'node:fs'
+// ★ 2026-10-18：transcript 整文件重写走带 fsync 的原子写（防断电留半截行）
+import { writeFileAtomicSync } from '../shared/atomic-write.mjs'
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { redactEntry } from './redact.mjs'
+import { diskWrite, getDiskTelemetry } from './disk-write.mjs'
+import { attributionOf } from '../shared/attribution.mjs'
 
 export const MAX_SANITIZED_LENGTH = 200
 
@@ -49,7 +53,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // K1.5 落盘目录只建一次（2026-09-13 系统性优化）：`append()` 此前每条都重复
   // `mkdirSync`——实测 0.401ms/条 → 0.221ms/条（省 0.181ms，近半；交替先后取中位），
   // 按 1–3 条/步 = 0.18–0.54ms/步。
-  // 但**不能**只图快：旧实现的"每次都 mkdir"在目录被运行期删除时（用户清理 ~/.yfw、
+  // 但**不能**只图快：旧实现的"每次都 mkdir"在目录被运行期删除时（用户清理 ~/.ponos、
   // 测试夹具 rmSync）是自愈的，故 append 侧必须在 ENOENT 时清标志重来一次（见下）。
   let dirEnsured = false
   // 构造即确保落盘目录存在（旧 transcript 直写 store.file、后续 append 均可用）
@@ -57,12 +61,30 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // D2-2：新会话落盘 meta 首行（版本标记；不占 seq、不投影）。旧文件/恢复会话不写。
   if (!existsSync(file)) {
     try {
-      appendFileSync(file, JSON.stringify({ type: 'meta', kind: 'transcript', schemaVersion: TRANSCRIPT_SCHEMA_VERSION, timestamp: new Date().toISOString() }) + '\n', 'utf-8')
+      // 【S2-D4 归属字段落盘】meta 首行是"会话级属性"的自然位置（归属属于整个会话，不属某条
+      // entry）。之所以必须在**新会话写入时**就落：spec §6.2 D4「L1 阶段作者恒为本人、工作区恒为
+      // `personal` 也要写——后补 = 全量数据迁移」——事后无法从 transcript 反推作者，只能迁移全量数据。
+      // 兼容性：`authorId`/`workspaceId` 是**可选新增字段**，与既有"在 { type, id, timestamp, message }
+      // 之上扩展可选字段、旧文件可加载"的约定一致，故**不动 TRANSCRIPT_SCHEMA_VERSION**（旧文件
+      // 仍视为 v1，读侧不得因缺这两个字段而拒绝加载）。
+      const attribution = attributionOf()
+      appendFileSync(file, JSON.stringify({
+        type: 'meta',
+        kind: 'transcript',
+        schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
+        timestamp: new Date().toISOString(),
+        authorId: attribution.authorId,
+        workspaceId: attribution.workspaceId,
+      }) + '\n', 'utf-8')
     } catch { /* 磁盘不可写不致命 */ }
   }
   // 内存状态：entries（seq → entry）、surface（投影顺序）、derive 缓存、压缩计数
   const entriesBySeq = new Map()
   const nodes = []
+  // thinking 条目 seq（升序）：不进 nodes（不单独成一帧），但**要并回下一条带 tool_use 的
+  // assistant 消息**（2026-10-22 思考回放；DeepSeek /anthropic 缺块直接 400）。deriveMessages
+  // 用二分取「上一节点之后、当前节点之前」的思考条目，故必须保持有序。
+  const thinkingSeqs = []
   let replaceGeneration = 0
   let compactCount = 0
   let nextSeq = 1
@@ -93,13 +115,14 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   }
 
   // 依序重建 seq + surface；孤儿 compaction/start 直接忽略（replace 从未落地）
-  // foreign：无 turbo transcript meta 标记的旧格式（claude-code 历史）transcript。
+  // foreign：无 turbo transcript meta 标记的旧格式（外部工具历史）transcript。
   // 其 tool_use/tool_result 链不满足 Anthropic API「tool_result 必须紧跟 tool_use」
   // 约束（跨层乱序 → 恢复时 API 400，2026-08-22 实测 1783 orphan tool_use）。
   // 恢复时剥离 tool 块、只保留文本历史（工具无法重放，文本才是可恢复的对话）。
   function rebuildSurface(entries, { foreign = false } = {}) {
     entriesBySeq.clear()
     nodes.length = 0
+    thinkingSeqs.length = 0
     replaceGeneration = 0
     compactCount = 0
     nextSeq = 1
@@ -123,6 +146,11 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
       e.seq = seq
       if (e.kind === 'compaction' && e.phase === 'start') continue // 孤儿/占位不投影
       entriesBySeq.set(seq, e)
+      // thinking 条目（2026-09-23）：落盘可见但不**单独**投影进模型输入；后续由
+      // deriveMessages 并回带 tool_use 的 assistant 消息（2026-10-22 思考回放）。
+      // 判定必须在 seq 计算**之后**（与上方 meta 的 continue 位置相反——meta 是"不占
+      // seq"，这里"占 seq 但不单独成帧"），确保 nextSeq 单调、旧条目 seq 不被复用。
+      if (e.type === 'thinking') { thinkingSeqs.push(seq); continue }
       if (e.kind === 'compaction' && e.phase === 'summary') {
         // 被遮蔽 seq 区间（投影中连续前缀）→ 替换为 summary seq
         const covered = new Set(e.sourceEventSeqs || [])
@@ -133,6 +161,9 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
         nodes.push(seq)
       }
     }
+    // 文件按 append 顺序即 seq 升序，但 resume 可能遇到外部拼接/损坏文件 ⇒ 显式排序，
+    // deriveMessages 的二分查找依赖这一不变量（乱序只会漏并思考块，不会错并别轮的）。
+    thinkingSeqs.sort((a, b) => a - b)
     // 窗口化恢复：超限截断到近窗口（保留尾部；compaction 条目始终保留在 nodes 内）
     if (maxEntries > 0 && nodes.length > maxEntries) {
       const cut = nodes.length - maxEntries
@@ -148,7 +179,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // 且 bridge 会报 skipped），而是**下一次 append 会与残行黏连**：`writeEntry` 用
   // `appendFileSync(line+'\n')`，若文件末尾是崩溃留下的半行（**没有换行**），新条目会被拼在
   // 同一行上 ⇒ 整行 JSON.parse 失败 ⇒ **新条目静默丢失**（连 skipped 计数都只是"一行坏"）。
-  // 这正是 append-only 日志最典型的故障形态，范式 pi-main `session/jsonl/storage.ts:38-41,89-105`。
+  // 这正是 append-only 日志最典型的故障形态。
   // 修法：加载时若末尾不是换行 ⇒ 补齐或丢弃那半行，让文件重新以 '\n' 结尾。
   // 只在**有残行**时才付出整读代价（健康文件零成本，见 endsWithNewline）。
   /** 末尾是否为换行（1 字节探针，不整读大文件）。读不到一律当"正常"——绝不因此动用户文件 */
@@ -201,7 +232,7 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     }
     const entries = await readLines()
     // 旧格式（foreign）判定：turbo 会话首行必写 transcript meta；无则视为
-    // claude-code 历史会话，恢复时按旧格式语义投影（剥离工具链，见 rebuildSurface）
+    // 外部工具历史会话，恢复时按旧格式语义投影（剥离工具链，见 rebuildSurface）
     const foreign = !entries.some((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
     rebuildSurface(entries, { foreign })
     const metaEntry = entries.find((e) => e?.type === 'meta' && e?.kind === 'transcript' && e?.schemaVersion != null)
@@ -216,7 +247,16 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
   // 磁盘上永远看不到）。故这里只能省「建目录」，不能省「重新打开文件」。
   function writeEntry(entry) {
     // S2-1 磁盘脱敏：落盘内容打码（内存 entriesBySeq 保留原文，模型输入不受影响）
-    appendFileSync(file, JSON.stringify(redactEntry(entry)) + '\n', 'utf-8')
+    // disk-site: transcript-append —— 最高频落盘点（每条 entry 一次）。
+    // ★ 硬约束：不得改成常驻 fd（setEntryUsage 用 tmp+rename 整体替换文件，持 fd 会指向被
+    //   unlink 的旧 inode ⇒ 静默丢写）。故这里仍用每次 appendFileSync，只外包一层遥测。
+    // 失败语义**守恒**：原实现失败上抛，由调用方 append 捕获 ENOENT 后重建目录并重试一次
+    //（append 的 `err?.code === 'ENOENT' && dirEnsured` 分支）。故包装后必须重新抛出——
+    // 否则等于吃掉异常、目录被运行期删除后的自愈重建失效。
+    const w = diskWrite(getDiskTelemetry(), 'transcript-append', () => {
+      appendFileSync(file, JSON.stringify(redactEntry(entry)) + '\n', 'utf-8')
+    })
+    if (!w.ok) throw w.error
   }
   function append(entry) {
     try {
@@ -249,6 +289,45 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     return entry
   }
 
+  // ── 思考回放（2026-10-22）────────────────────────────────────────────────────
+  // 取 (afterSeq, beforeSeq) 区间内的 thinking 块。区间取法而不是"标记归属"：thinking
+  // 条目在下一条 assistant 落盘前写入（engine 的 flushThinking），文件序即真实时间序；
+  // 本会话内该区间最多只有一条 assistant 的思考，跨轮残留也会被下一条用户消息挡住。
+  function thinkingBlocksBetween(afterSeq, beforeSeq) {
+    if (!thinkingSeqs.length) return null
+    // 第一个 > afterSeq 的位置（thinkingSeqs 升序，见 rebuildSurface / appendThinking）
+    let lo = 0
+    let hi = thinkingSeqs.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (thinkingSeqs[mid] <= afterSeq) lo = mid + 1
+      else hi = mid
+    }
+    let blocks = null
+    for (let i = lo; i < thinkingSeqs.length && thinkingSeqs[i] < beforeSeq; i++) {
+      const content = entriesBySeq.get(thinkingSeqs[i])?.message?.content
+      if (!Array.isArray(content)) continue
+      for (const b of content) {
+        if (b && b.type === 'thinking') (blocks || (blocks = [])).push(b)
+      }
+    }
+    return blocks
+  }
+
+  // 模型输入投影：thinking 只并入**带 tool_use 的 assistant 轮**（放 content 头部）。
+  // 为什么不是全部 assistant 轮：DeepSeek 的强制校验落在工具轮回放（助手的 tool_use
+  // 必须与它的 thinking 一起回传）；纯文本轮回放思考只会白涨 prompt（本仓长会话的
+  // thinking 条目可达数百条），且对签名端点意味着更多无效签名风险。返回**新对象**，
+  // 绝不改 entry.message：落盘、transcript 回放、usage 后挂都以原始条目为真源。
+  function projectMessage(entry, prevSeq, seq) {
+    const msg = entry.message
+    if (!msg || msg.role !== 'assistant' || entry.kind === 'compaction') return msg
+    if (!Array.isArray(msg.content) || !msg.content.some((b) => b && b.type === 'tool_use')) return msg
+    const blocks = thinkingBlocksBetween(prevSeq, seq)
+    if (!blocks) return msg
+    return { ...msg, content: [...blocks, ...msg.content] }
+  }
+
   return {
     file,
     // 加载（async 流式；resume / 测试用）。加载后 entries/surface 为当前权威快照
@@ -260,6 +339,10 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     userEntry(content, extra = {}) {
       return { type: 'user', id: randomUUID(), timestamp: new Date().toISOString(), message: { role: 'user', content: String(content ?? '') }, ...extra }
     },
+    /**
+     * @param {any} blocks
+     * @param {{ usage?: any, model?: any }} [opts]
+     */
     assistantEntry(blocks, { usage, model } = {}) {
       const entry = { type: 'assistant', id: randomUUID(), timestamp: new Date().toISOString(), message: { role: 'assistant', content: blocks } }
       if (usage) entry.message.usage = usage
@@ -322,13 +405,73 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
     },
     appendToolResults(toolResults) {
       const entry = this.toolResultsEntry(toolResults)
-      return append(baseEntry('user', entry.message, {}))
+      // 增删行数（2026-10-08）：**顶层** diffs 字段 —— 仅供回放侧 UI（GUI 转录适配器把它
+      // 并进工具结果的回显，见 src/lib/transcriptAdapter.ts 预扫描）。刻意**不进**
+      // entry.message.content：那里是模型输入（deriveMessages 逐条投影 message），
+      // UI 专用数据混进去会污染上下文与前缀缓存。无数据时不加键 ⇒ 旧场景条目形状逐字不变。
+      const diffs = (toolResults || [])
+        .filter((r) => Number.isFinite(r?.additions) || Number.isFinite(r?.deletions))
+        .map((r) => ({
+          tool_use_id: r.tool_use_id,
+          additions: Number.isFinite(r.additions) ? r.additions : 0,
+          deletions: Number.isFinite(r.deletions) ? r.deletions : 0,
+        }))
+      return append(baseEntry('user', entry.message, diffs.length ? { diffs } : {}))
     },
     // P4-5 审计 meta 条目：写日志 + entriesBySeq 记录，不进 surface.nodes（模型输入纯净）
     appendMeta(kind, extra = {}) {
       const entry = { type: 'meta', kind, id: randomUUID(), seq: nextSeq++, timestamp: new Date().toISOString(), ...extra }
       append(entry)
       entriesBySeq.set(entry.seq, entry)
+      return entry
+    },
+    // 思考块落盘（2026-09-23）：推理模型的 thinking 此前只经 wire 实时转发、从不落盘，
+    // 回放（切会话/重开/导出/蒸馏）里完全没有思考。本方法补上落盘。
+    // 【投影规则，2026-10-22 修订】thinking 仍**不单独成帧**（不进 nodes ⇒ 派生消息条数不变），
+    // 但 deriveMessages 会把它并回**下一条带 tool_use 的 assistant 消息**的 content 头部：
+    // DeepSeek /anthropic 在思考模式下要求工具轮的 thinking 原样回传，缺块直接 400
+    // 「The content[].thinking in the thinking mode must be passed back to the API」。
+    // 早期实现**一律不投影**的理由是"缺 signature 会被端点拒"——现在解析器会带上
+    // `signature`（真 Anthropic 校验签名；DeepSeek 等兼容端点接受空串，见
+    // kernel/api.mjs#prepareMessagesForAnthropicWire），该理由只对**无签名的旧历史**成立，
+    // 由该函数按端点能力丢弃，不再牺牲所有端点的工具轮回放。
+    // 与 meta 的同构点仅在"不进 nodes"，差别在 seq：meta 不占 seq（在算 seq 前 continue），
+    // thinking **占 seq**（保序 + 不复用）。
+    // 长度不设上限（用户裁定全量落盘）。脱敏由 writeEntry 单点负责，此处不做例外——
+    // 注意该单点原本不认识 thinking 字段（2026-09-23 已补上该分支），若将来新增字段形态，
+    // 需同步在 kernel/redact.mjs 的块分支里覆盖，否则会明文落盘。
+    appendThinking(text, opts = {}) {
+      // blocks = 解析器给的**原始块**（未分段、含 signature），回放必须以它为准；
+      // 无 blocks 时退回单段文本（旧调用点 / 流在 content_block_stop 前断掉的兜底）。
+      const blocks = Array.isArray(opts.blocks)
+        ? opts.blocks
+          .filter((b) => b && typeof b.thinking === 'string')
+          .map((b) => ({
+            type: 'thinking',
+            thinking: b.thinking,
+            ...(typeof b.signature === 'string' ? { signature: b.signature } : {}),
+          }))
+        : []
+      const entry = {
+        type: 'thinking',
+        id: randomUUID(),
+        seq: nextSeq++,
+        timestamp: new Date().toISOString(),
+        message: {
+          role: 'assistant',
+          content: blocks.length ? blocks : [{ type: 'thinking', thinking: String(text ?? '') }],
+        },
+      }
+      // model 落在 message 层（既有约定，与 assistantEntry 一致）：消费侧读 msg.model
+      // （src/lib/transcriptAdapter.ts 的 typeof msg.model === 'string'，msg = entry.message），
+      // 写顶层则所有按约定读的消费方都看不到。
+      if (opts.model) entry.message.model = opts.model
+      append(entry)
+      entriesBySeq.set(entry.seq, entry)
+      // 直接 append（低级原语）不会失效派生缓存：thinking 改变了"下一条 tool_use
+      // assistant 的投影内容"，必须显式失效，否则同 nodes 键下会命中旧派生数组。
+      thinkingSeqs.push(entry.seq)
+      invalidate()
       return entry
     },
     // 已落盘条目的 usage 后挂（M1 空文本收尾轮专用：把本轮总 usage 挂到最后一条
@@ -341,7 +484,12 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
       if (!entry || !usage) return entry
       entry.message.usage = usage
       const want = JSON.stringify(redactEntry(entry)) // 落盘形态（含脱敏），同时也用于幂等比较
-      try {
+      // disk-site: transcript-usage —— 本点落盘形态是 tmp+rename **整体替换**文件。
+      // ★ 硬约束：不得改成常驻 fd（fd 会指向被 rename 掉的旧 inode ⇒ 静默丢写）；
+      //   此处只外包一层遥测，读-改-写整段与 tmp+rename 形态逐字不变。
+      // 失败语义**守恒**：原实现对整段读-改-写静默 catch（"磁盘不可写不致命：内存已更新"），
+      // 且上游调用点 engine.mjs#finalizeUsage 无 try ⇒ 这里同样不抛（抛出去才叫改变行为）。
+      diskWrite(getDiskTelemetry(), 'transcript-usage', () => {
         const text = readFileSync(file, 'utf-8')
         const lines = text.split('\n')
         // K2.4 尾部优先反查（2026-09-13 系统性优化 Task 10）：目标**几乎总是**文件末尾那一条
@@ -367,13 +515,19 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
             try { return JSON.parse(t).seq === entry.seq } catch { return false }
           })
         }
-        if (idx < 0) return entry
+        if (idx < 0) return entry // 未命中 ⇒ 不改盘（原语义；返回值由外层统一 return entry）
         if (lines[idx] === want) return entry // 幂等：盘上已是目标形态 ⇒ 连整文件重写都省掉
         lines[idx] = want
-        const tmp = file + '.usage-tmp'
-        writeFileSync(tmp, lines.join('\n'), 'utf-8')
-        renameSync(tmp, file)
-      } catch { /* 磁盘不可写不致命：内存已更新 */ }
+        // ★★ 2026-10-18：改用 writeFileAtomicSync（**fsync 后 rename** + rename 重试 + 失败清理）。
+        //   原来是手写 `writeFileSync(tmp) + renameSync`，**没有 fsync** ⇒ 断电时可能留下
+        //   半截 transcript：尾部行不完整 ⇒ 下次 resume 解析失败、或该条 usage 记录变成脏行。
+        //   会话历史是**用户不可重建的数据**，值这一次 fsync 的开销（本来就要整文件重写）。
+        writeFileAtomicSync(file, lines.join('\n'))
+        return entry
+      })
+      // 落盘失败**不处理**：磁盘不可写不致命——内存已更新（原语义即静默 catch）。本点本就
+      // best-effort，故这里**故意**不接返回值、不做任何分支（写成 `if (!w.ok) 重抛` 会破坏该点的
+      // 静默语义，写成 `if (!w.ok) { }` 则是"有 if 无分支"的空块、会被读成漏了处理）。
       return entry
     },
     // 压缩开始占位：仅写日志（持锁标记），不进 surface.nodes；崩溃留孤儿 → 加载回滚
@@ -405,11 +559,25 @@ export function createSessionStore({ configDir, cwd, sessionId, maxEntries = 0 }
       if (deriveCache && deriveCache.key === key) return deriveCache.messages
       const seqs = []
       const messages = []
+      let prevSeq = 0 // 上一投影节点的 seq：思考块只并入"它之后、当前节点之前"的 assistant
       for (const seq of nodes) {
         const entry = entriesBySeq.get(seq)
         if (!entry) continue
         seqs.push(seq)
-        messages.push(entry.message)
+        messages.push(projectMessage(entry, prevSeq, seq))
+        // ★ 2026-10-22（真机 400 根因）：压缩摘要节点的 seq 是"写摘要时追加"的序号，
+        //   比它替换掉的整段都大；但它替换的区间末端是**被遮蔽集合的最大 seq**。若把摘要
+        //   seq 当下一节点的 prevSeq，紧随摘要的保留消息会拿到「下界 > 上界」的空区间 ⇒
+        //   它自己的 thinking 块漏并 ⇒ DeepSeek /anthropic 直接 400「thinking must be
+        //   passed back」。thinking 条目不参与遮蔽（它们不投影、不在 sourceEventSeqs 里），
+        //   所以边界必须取被遮蔽节点的最大值，而不是摘要自身的 seq。
+        let boundary = seq
+        if (entry.kind === 'compaction' && entry.phase === 'summary') {
+          boundary = 0
+          for (const s of entry.sourceEventSeqs || []) if (s > boundary) boundary = s
+          if (!boundary) boundary = seq // 无遮蔽集合（异常摘要）⇒ 退回自身 seq，不放大区间
+        }
+        prevSeq = boundary
       }
       deriveCache = { key, messages, seqs }
       bumpRev() // 真实重建 ⇒ 派生数组身份已变（K1.4 纪元，见 deriveRev 声明处）

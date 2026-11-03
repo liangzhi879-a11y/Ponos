@@ -20,8 +20,11 @@ async function withTimeout(p, ms, onTimeout) {
 }
 
 /**
- * @param {Array<{type:'cmd',run:string,expect?:number,timeoutMs?:number}|{type:'judge',text:string}>} doneWhen
- * @param {{ tools:any, judge:(o:{target:string})=>Promise<{done:boolean,reason?:string}>, signal?:any, timeoutMs?:number }} deps
+ * ★ `doneWhen` 声明为 `Array<any>`：完成条件是**异构**判别联合（`cmd`/`judge`/将来可能新增的
+ *   形态），而实现里末尾的 `else` 分支专门处理"未知形态"（fail-closed）。写死两元联合会让
+ *   那个分支里的 `spec` 收窄成 `never`（TS2339，实测 2 条），而它恰恰是最不该删的兜底。
+ * @param {Array<any>} doneWhen
+ * @param {{ tools?: any, judge?: any, signal?: any, timeoutMs?: number }} [deps]
  * @returns {Promise<{passed:boolean|null, results:Array, reason:string}>}
  */
 export async function verifyDoneWhen(doneWhen = [], deps = {}) {

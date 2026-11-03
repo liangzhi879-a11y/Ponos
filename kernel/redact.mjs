@@ -35,6 +35,9 @@ export function redactEntry(entry) {
       const nb = { ...b }
       if (typeof b.content === 'string') nb.content = redactText(b.content)
       if (typeof b.text === 'string') nb.text = redactText(b.text)
+      // 思考块（2026-09-23）：字段名是 thinking（不是 text/content），此前无分支 ⇒ 明文落盘。
+      // 按**字段**判定而不按 type，任何带 thinking 串的块都被覆盖。脱敏开关沿用 KEEP()。
+      if (typeof b.thinking === 'string') nb.thinking = redactText(b.thinking)
       if (b.type === 'tool_use' && b.input && typeof b.input === 'object') {
         try { nb.input = JSON.parse(redactText(JSON.stringify(b.input))) } catch { /* 保持原样 */ }
       }

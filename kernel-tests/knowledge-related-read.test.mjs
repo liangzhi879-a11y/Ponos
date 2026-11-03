@@ -13,7 +13,7 @@
 // 所以夹具刻意用「改 `docs.jsonl` 后的重新 load」来构造：`.md` 未动 ⇒ 不触发重建，
 // 物化行仍是旧的 ⇒ 正好是读时校验要处理的场景。
 //
-// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'

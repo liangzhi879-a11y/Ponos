@@ -13,9 +13,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// 可用 YFW_TEST_KERNEL_CLI 指向 release 产物（release/YFWorking/kernel/cli.mjs）：
+// 可用 PONOS_TEST_KERNEL_CLI 指向 release 产物（release/Ponos/kernel/cli.mjs）：
 // 同步门要求验证的正是**线上那份**（CRLF、逐文件覆盖后的真实字节），而非源码树里的同名文件。
-const KERNEL_CLI = process.env.YFW_TEST_KERNEL_CLI || fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
+const KERNEL_CLI = process.env.PONOS_TEST_KERNEL_CLI || fileURLToPath(new URL('../kernel/cli.mjs', import.meta.url))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function spawnKernel(env, dir) {
@@ -63,7 +63,7 @@ const ANSWER = { type: 'user', message: { role: 'user', content: '用户回答�
 
 test('提问即挂起：模型产出提问后必须停住等作答（不得自行跑完回合）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ask-block-'))
-  const k = spawnKernel({ PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir, PONOS_ASK_USER_TIMEOUT_MS: '30000' }, dir)
+  const k = spawnKernel({ PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: dir, PONOS_HOME: dir, PONOS_ASK_USER_TIMEOUT_MS: '30000' }, dir)
   try {
     await sleep(800) // 等 init
     k.send({ type: 'user', session_id: 'ask-1', message: { role: 'user', content: ASK } })
@@ -110,8 +110,8 @@ test('挂起期间硬看门狗展期：等待作答不得被 exit(7) 误杀', as
   // 硬看门狗 2s（无展期必然误杀），提问上限 20s
   const k = spawnKernel({
     PONOS_MOCK_API: '1',
-    CLAUDE_CONFIG_DIR: dir,
-    YFW_HOME: dir,
+    PONOS_CONFIG_DIR: dir,
+    PONOS_HOME: dir,
     PONOS_KERNEL_HARD_TIMEOUT_MS: '2000',
     PONOS_ASK_USER_TIMEOUT_MS: '20000',
   }, dir)
@@ -135,8 +135,8 @@ test('等待有界：无人作答时按提问上限收尾本轮（不留永久�
   const dir = mkdtempSync(join(tmpdir(), 'ask-timeout-'))
   const k = spawnKernel({
     PONOS_MOCK_API: '1',
-    CLAUDE_CONFIG_DIR: dir,
-    YFW_HOME: dir,
+    PONOS_CONFIG_DIR: dir,
+    PONOS_HOME: dir,
     PONOS_ASK_USER_TIMEOUT_MS: '2500',
   }, dir)
   try {

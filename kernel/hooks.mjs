@@ -33,10 +33,54 @@ function parseDecision(rule, event, output) {
   return {}
 }
 
+/**
+ * hook 子进程的**白名单环境**（SEC-04，2026-10-18）。
+ *
+ * ★ 缺陷：原来这里是 `env: { ...process.env, ... }` —— hook 命令来自**项目级配置**
+ *   （`.ponos/hooks.json` / settings），而项目目录常来自 clone / 别人给的仓库
+ *   ⇒ **不可信代码继承了完整环境**，包括：
+ *     · 各家 LLM API Key（PONOS_*_AUTH_TOKEN / PONOS_VISION_* / 第三方 PONOS_*_KEY）
+ *     · 代理与凭据注入变量（HTTP_PROXY 里的 user:pass）
+ *     · 密码库路径与解锁上下文（PONOS_HOME / PONOS_VAULT_*）
+ *   一个恶意 hook 只要读 `env` 就能把密钥打走 —— 而它本来只是"格式检查/通知"这类轻量动作。
+ *
+ * ★ 为什么是**白名单**而不是"黑名单剔除敏感词"：黑名单永远漏（新变量名、拼接名、第三方前缀）。
+ *   白名单的失效方向是"hook 少了某项能力"（可诊断、可补）；
+ *   黑名单的失效方向是"密钥泄漏"。两者代价不对等。
+ *
+ * ★ NODE_OPTIONS 刻意**不透传**：它能 `--require` 任意模块 = 任意代码执行。
+ *   hook 真需要 Node 特殊选项时应在自己的命令里显式写。
+ */
+function hookEnv(extra = {}) {
+  const OUT = {}
+  // 基础运行环境：找命令、临时目录、语言/编码、终端行为
+  const PASSTHROUGH = [
+    'PATH', 'Path', 'PATHEXT',
+    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'TEMP', 'TMP', 'TMPDIR',
+    'SystemRoot', 'SYSTEMROOT', 'windir', 'ComSpec',
+    'LANG', 'LC_ALL', 'LC_CTYPE', 'PYTHONIOENCODING', 'PYTHONUTF8',
+    'SHELL', 'TERM', 'PWD',
+    // 代理开关本身不敏感（URL 里若含 user:pass 也不该给 hook —— 见下方排除）
+    'NO_PROXY', 'no_proxy',
+  ]
+  for (const k of PASSTHROUGH) {
+    if (process.env[k] !== undefined) OUT[k] = process.env[k]
+  }
+  // ★ 兜底排除：即使上面误加了，名字里带敏感词的也一律不透传。
+  //   这层是"双保险"——白名单已足够，但代码演进时容易有人往里加东西。
+  const SENSITIVE = /TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|VAULT|COOKIE|SESSION/i
+  for (const k of Object.keys(OUT)) {
+    if (SENSITIVE.test(k)) delete OUT[k]
+  }
+  return { ...OUT, ...extra }
+}
+
 async function runHook(rule, payload) {
   const started = Date.now()
   const child = spawn(rule.command, rule.args || [], {
-    env: { ...process.env, PONOS_HOOK_EVENT: payload.event || '' },
+    // ★ 2026-10-18 SEC-04：白名单环境（详见 hookEnv 注释）
+    env: hookEnv({ PONOS_HOOK_EVENT: payload.event || '' }),
     timeout: rule.timeoutMs || 10_000,
     windowsHide: true,
   })

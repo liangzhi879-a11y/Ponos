@@ -4,7 +4,19 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { serializeWorkflow, toModel, parseYaml, normalizeWorkflow, validateWorkflow } from '../kernel/workflow-dsl.mjs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { serializeWorkflow, toModel, parseYaml, normalizeWorkflow, validateWorkflow, discoverWorkflows } from '../kernel/workflow-dsl.mjs'
+
+function withYml(content, fn) {
+  const root = mkdtempSync(join(tmpdir(), 'wf-trig-'))
+  try {
+    mkdirSync(join(root, 'demo'), { recursive: true })
+    writeFileSync(join(root, 'demo', 'workflow.yml'), content, 'utf-8')
+    return fn(root)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
 
 const MODEL = {
   name: 'demo', description: '演示', version: '1.0.0', triggers: ['演示'],
@@ -107,4 +119,48 @@ test('serialize → parse 往返：空数组/空对象不丢型（I2）', () => 
   assert.deepEqual(back.edges, [], 'edges: [] 须还原为数组（裸 `edges:` 会被解析成 {} → LEGACY_DSL）')
   assert.deepEqual(back.settings, {})
   assert.deepEqual(validateWorkflow(back).errors.filter((e) => e.code === 'LEGACY_DSL'), [])
+})
+
+// ---------- 触发开关持久化链（2026-10-09 发布 UX 线）：trigger_config.auto_trigger ----------
+// GUI 发布对话框把触发开关写进 `trigger_config.auto_trigger`（保留其它键，见 setAutoTrigger）；
+// 内核读回口径 = trigCfg.auto_trigger === true || 顶层平铺 auto_trigger === true（见
+// discoverWorkflows）。本测试钉整链（serialize → parse → discover），GUI/服务端 meta 沿此口径对齐。
+
+test('触发开关链：auto_trigger 经 serialize→parse→discover 恒可达（含严格 === true 与非命中负例）', () => {
+  // ① 模型（GUI 发布对话框产物）→ YAML：开关在 trigger_config 内，其它键整包保真
+  const model = {
+    name: 'trig', triggers: ['日报'],
+    trigger_config: { manual: true, auto_trigger: true, schedule: '0 9 * * *' },
+    nodes: [{ id: 'a', type: 'start' }, { id: 'b', type: 'end' }],
+    edges: [{ id: 'e1', source: 'a', target: 'b' }],
+  }
+  const yml = serializeWorkflow(model)
+  const back = normalizeWorkflow(parseYaml(yml))
+  assert.deepEqual(back.trigger_config, { manual: true, auto_trigger: true, schedule: '0 9 * * *' },
+    'trigger_config 整包往返（auto_trigger 不得挤掉/覆盖其它键）')
+  // ② 落盘文件 → discover 读回（内核触发面的消费口径）
+  withYml(yml, (root) => {
+    const list = discoverWorkflows({ root })
+    assert.equal(list.length, 1)
+    assert.equal(list[0].autoTrigger, true, 'trigger_config.auto_trigger=true 必须被 discover 读回')
+    assert.deepEqual(list[0].triggers, ['日报'], '触发词同链读回')
+  })
+  // ③ 块式 trigger_config（YAML 直写形态）：同一读回口径
+  const block = 'name: t\ntrigger_config:\n  manual: true\n  auto_trigger: true\nnodes: [{ id: a, type: start }, { id: b, type: end }]\nedges: [{ id: e1, source: a, target: b }]\n'
+  withYml(block, (root) => {
+    assert.equal(discoverWorkflows({ root })[0].autoTrigger, true, '块式 trigger_config 同样读回')
+  })
+  // ④ 负例：false / 字符串 "true" / 数字 1 / 缺省 —— 严格 === true，勿放宽
+  for (const frag of ['auto_trigger: false', 'auto_trigger: "true"', 'auto_trigger: 1', '']) {
+    const text = `name: t\ntrigger_config: { manual: true${frag ? ', ' + frag : ''} }\nnodes: [{ id: a, type: start }, { id: b, type: end }]\nedges: [{ id: e1, source: a, target: b }]\n`
+    withYml(text, (root) => {
+      assert.equal(discoverWorkflows({ root })[0].autoTrigger, false, `不应命中：${frag || '缺省'}`)
+    })
+  }
+  // ⑤ legacy 平铺回退：旧文件顶层 `auto_trigger: true`（无 trigger_config）仍须读回 true
+  //    （migrateLegacy 之前的形态；GUI 侧 foldLegacyAutoTrigger 负责打开时归一，两侧不得说反话）
+  const legacy = 'name: t\nauto_trigger: true\nnodes: [{ id: a, type: start }, { id: b, type: end }]\nedges: [{ id: e1, source: a, target: b }]\n'
+  withYml(legacy, (root) => {
+    assert.equal(discoverWorkflows({ root })[0].autoTrigger, true, '顶层平铺 auto_trigger 回退不得失效')
+  })
 })

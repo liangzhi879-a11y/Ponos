@@ -23,15 +23,27 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { toDocId } from '../shared/knowledge-core.mjs'
-// OCR 引擎探测与内核 OCR 工具**同一份实现**（tools.mjs 已导出）：探测规则只有一处，
+// OCR 引擎探测与内核 OCR 工具**同一份实现**（现位于 media-tools.mjs）：探测规则只有一处，
 // 否则"工具能找到引擎、导入找不到"这类不一致会随环境差异随机出现。
 // childEnv/registerChild 同样是内核既有的两道纪律（env 白名单防子进程窃取宿主密钥、
-// 子进程登记以便会话中止时一起 kill）。
-import { findOcrEngine, registerChild, childEnv } from './tools.mjs'
+// 子进程登记以便会话中止时一起 kill），其实现在 exec-base.mjs。
+// P2-1：本文件**不再从 tools.mjs 取任何东西**（此前 `tools ↔ knowledge-import` 构成
+// 文件级 ESM 环）—— 四项依赖分别直取 media-tools（OCR 探测、视觉调用）与 exec-base
+// （子进程登记、env 白名单），环随之消失。
+import { findOcrEngine, visionDescribe } from './media-tools.mjs'
+import { registerChild, childEnv } from './exec-base.mjs'
 // 视觉是否可用：与 Vision 工具**同一份判定**（provider.visionEnv，兼容 PONOS_VISION_*/YFW_VISION_*）。
 // 各写一份"读哪个 env"必然漂移 —— 实测就发生过 bridge 注入 YFW_* 而内核只读 PONOS_*，
 // 导致用户配好了视觉模型却被判定"未配置"（详见 kernel/provider.mjs 的 visionEnv 注释）。
 import { visionAvailable } from './provider.mjs'
+// 平台能力层（2026-10-09 迁移）：本模块涉及的两处平台事实 —— 台账键的大小写归一
+// （`path.caseInsensitive`）与 python 解释器名（`python.bin`）—— 统一从能力层取，
+// 不再在此自写平台判定。模块级缓存一次。
+import { platformCapabilities } from '../shared/platform-capabilities.mjs'
+// ★ 2026-10-18 DIAG-01：python 定位的**唯一真源**（运行时与诊断必须调同一个函数；
+//   原来两处各维护一套候选，导致诊断误报"无 python"而运行时其实正常）
+import { pythonCandidates, resolvePython as sharedResolvePython } from '../shared/python-runtime.cjs'
+const CAPS = platformCapabilities()
 
 /** 台账文件名（空间根）：`walkMd` 只收 .md、`listTree` 只列 dir 与 .md ⇒ 不会进文件树/索引 */
 export const LEDGER_NAME = '.import.json'
@@ -102,8 +114,45 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.svn', '.hg', '.index', '.ob
 /** 内置空间 id：与其重名会与内置空间冲突（docId 撞车），必须拒绝 */
 const BUILTIN_SPACE_IDS = new Set(['experience', 'session-memory', 'skill-experience'])
 
+/**
+ * 统一的"成功/失败"结果构造器。
+ * ★ `@returns` 必须登记成**字面量判别式 union**：不写时 TS 把 `ok` 推断成宽 `boolean`
+ * ⇒ 两个成员无法判别，调用点 `if (x.ok === false) …x.error…` / `if (x.ok) …x.value…`
+ * 的收窄**全部失效**（实测多处 TS2322/TS2339）。这里只补类型，不改任何运行逻辑。
+ * @returns {{ ok: true, value: any }}
+ */
 const ok = (v) => ({ ok: true, value: v })
+/** @returns {{ ok: false, error: string, message: string }} */
 const bad = (error, message) => ({ ok: false, error, message })
+
+/**
+ * 导入报告里**逐文件明细**的一行（converted / skipped / failed 三档共用同一形状）。
+ * ★ 为什么要有它：`importDocuments` 的报告要写成**判别式**返回类型（见其 JSDoc），
+ * 而三档明细的元素类型必须显式给出——否则只能退回 `any[]`，把"报告字段"整体变成无类型面。
+ * 三档各自只填自己的键（`out`/`reason`/`error`/`phase`…），故除 `source` 外全部可选。
+ * @typedef {{ source?: string, out?: string|null, bytes?: number|null, converter?: string|null,
+ *   truncated?: boolean, action?: string, reason?: string, error?: string, message?: string,
+ *   phase?: string, warnings?: Array<unknown>, vision?: object|null }} ImportRow
+ */
+
+/** 视觉表格提取的整批汇总（`report.vision`；逐篇处理中累加，故字段可变） */
+/**
+ * @typedef {{ configured: boolean, skipped: string|null, used: boolean, pages: number, tables: number }} ImportVision
+ */
+
+/**
+ * `importDocuments` 的**成功**报告形状（判别字段 `ok: true` 必须是字面量，否则判别 union 失效）。
+ * @typedef {{ ok: true, spaceId: string, spaceName: string, spaceCreated: boolean, spaceExisted: boolean,
+ *   dryRun: boolean, spaceRoot: string, source: string|string[], sources: string[], sourceIsDir: boolean,
+ *   counts: { total: number, converted: number, skipped: number, failed: number },
+ *   converted: Array<ImportRow>, skipped: Array<ImportRow>, failed: Array<ImportRow>,
+ *   indexSync: string, indexSyncDetail?: object, warnings: Array<unknown>, vision: ImportVision }} ImportReportOk
+ */
+
+/** `importDocuments` 的报告 = 成功 | 失败（失败只需 error/message，见其函数体内所有早退分支） */
+/**
+ * @typedef {ImportReportOk | { ok: false, error: string, message: string }} ImportReport
+ */
 
 /**
  * 人类可读体积（B/KB/MB）。**报错里的数字必须可核对**：上限被 override 成 512B 时，
@@ -245,7 +294,7 @@ function ensureDirsInside(spaceRoot, outAbs) {
 function sourceKey(abs) {
   let real = resolve(abs)
   try { real = realpathSync(abs) } catch { /* 极少数读不到 realpath → 退化成绝对路径（同机同文件仍稳定） */ }
-  const norm = process.platform === 'win32' ? real.toLowerCase() : real
+  const norm = CAPS.path.caseInsensitive ? real.toLowerCase() : real
   return createHash('sha256').update(norm).digest('hex').slice(0, 16)
 }
 
@@ -414,6 +463,9 @@ function collectOne(from, limits, { prefix = '', usedRel = new Set() } = {}) {
  * 输出相对路径：`<原相对目录>/<原名去扩展名>.md`。
  * 名字被占用时（同批撞名 / 磁盘上已有**非我方**文件）递增 `-2`、`-3` 让位 ——
  * 绝不覆盖我们没有写入记录的文件（用户的 md 可能就放在那个空间里）。
+ * @param {string} rel 源文件的相对路径
+ * @param {(rel: string) => boolean} [isTaken] "该相对 md 路径是否已被占用"（缺省恒 false）
+ *   ★ 必须登记：不写时 TS 按默认值 `() => false` 把形参推断成**零参**函数 ⇒ 传参报 TS2554。
  */
 export function outRelFor(rel, isTaken = () => false) {
   const dir = dirname(rel)
@@ -518,19 +570,23 @@ export function renderMarkdown({ meta, sections, maxDocBytes = IMPORT_LIMITS.max
  * 自带 python 解释器（安装包 `extraResources` 里的 bundled 运行时）。
  * dev = `<repo>/runtime/python/python.exe`；release = `resources/runtime/python/python.exe`。
  */
+/** 路径分隔符（避免在源码里写反斜杠字面量：本仓多处被它绊过） */
+function pathSep() { return String.fromCharCode(92) }
+
 export function bundledPython() {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const cands = [
-    join(here, '..', 'runtime', 'python', 'python.exe'),
-    join(here, '..', 'runtime', 'python', 'bin', 'python3'),
-    join(dirname(here), 'resources', 'runtime', 'python', 'python.exe'),
-  ]
-  return cands.find((p) => existsSync(p)) || null
+  // ★ 2026-10-18 DIAG-01：候选列表收敛到 shared/python-runtime.cjs（与诊断共用同一份）。
+  //   本函数保留原语义（返回**第一个存在的自带解释器**），但不再自己维护候选清单。
+  for (const c of pythonCandidates({ kernelDir: dirname(fileURLToPath(import.meta.url)) })) {
+    // 裸命令（PATH 兜底，不含路径分隔符）不算 bundled
+    if (!c.includes('/') && !c.includes(pathSep())) continue
+    try { if (existsSync(c)) return c } catch { /* 继续 */ }
+  }
+  return null
 }
 
 /**
  * python 解释器定位（引擎脚本本身走 kernel/tools.mjs 的同一份探测）。
- * 优先级：显式 `pythonPath` → env（`PONOS_PYTHON`/`YFWORKING_PYTHON`）→ **自带**解释器
+ * 优先级：显式 `pythonPath` → env（`PONOS_PYTHON`）→ **自带**解释器
  * → PATH 上的 `python`/`python3`。
  *
  * **为什么自带要排在 PATH 之前**：系统 python 通常没装这套解析依赖（pypdf/python-docx/
@@ -538,20 +594,17 @@ export function bundledPython() {
  * env 仍排最前 —— 那是运维的显式覆盖，不能被本地约定压掉。
  */
 export function resolvePython(pythonPath = null) {
-  const explicit = String(pythonPath ?? '').trim()
-  if (explicit) return explicit
-  const env = String(process.env.PONOS_PYTHON || process.env.YFWORKING_PYTHON || '').trim()
-  if (env) return env
-  const bundled = bundledPython()
-  if (bundled) return bundled
-  return process.platform === 'win32' ? 'python' : 'python3'
+  // ★ 2026-10-18 DIAG-01：**委托给 shared/python-runtime.cjs**（唯一真源）。
+  //   原来这里自己维护三层优先级，而诊断侧另有一套 ⇒ 诊断误报"无 python"。
+  //   现在两侧调同一个函数，口径不可能再漂移。
+  return sharedResolvePython({ pythonPath, kernelDir: dirname(fileURLToPath(import.meta.url)) })
 }
 
 /**
  * 解析器脚本定位。
  *
  * **为什么自己要一份候选列表，而不是"引擎同目录"一把梭**：`findOcrEngine()` 返回的是
- * **第一个存在**的 ocr_engine.py —— 实测开发机上命中的是 `~/.yfw/skills/_common/`，
+ * **第一个存在**的 ocr_engine.py —— 实测开发机上命中的是 `~/.ponos/skills/_common/`，
  * 而新脚本只在仓库 `runtime/skills/_common/` 里（用户技能目录是同步产物、可能滞后）。
  * 只在"引擎同目录"找，会出现"引擎找得到、解析器找不到"的假死。
  * 因此按"最具体 → 最通用"依次探测，任何一处命中即可用。
@@ -582,9 +635,11 @@ export function parserCandidates() {
   pushEnv(process.env.PONOS_HOME, 'skills', '_common', 'doc_to_md.py')
   push(join(cwdUp2, 'runtime', 'skills', '_common', 'doc_to_md.py'))
   push(join(cwdUp2, 'resources', 'runtime', 'skills', '_common', 'doc_to_md.py'))
-  push(join(home, '.yfw', 'skills', '_common', 'doc_to_md.py'))
+  // ★ 2026-10-10（用户裁决「Ponos 不再使用旧数据根」）：原先还探测 `~/.yfw/skills/_common/
+  //   doc_to_md.py`（在售旧版的技能库）—— 已删。理由是"静默换实现"最危险：旧根里恰好有同名
+  //   文件时，Ponos 会拿**别人目录里的脚本**去解析用户的文档（版本/行为都不受控）。
+  //   Ponos 自己的技能根走上面两行（PONOS_SKILLS_DIR / PONOS_HOME）。
   push(join(home, '.ponos', 'skills', '_common', 'doc_to_md.py'))
-  push(join(home, '.claude', 'skills', '_common', 'doc_to_md.py'))
   return out.filter(Boolean)
 }
 
@@ -603,7 +658,7 @@ export function resolveParserScript() {
 export function defaultConverter({ absPath, rel, limits, timeoutMs = 900_000, pythonPath = null, pageImagesDir = null }) {
   const script = resolveParserScript()
   if (!script) {
-    return Promise.resolve(bad('parser-missing', '未找到解析器 doc_to_md.py（确认技能库已安装，或用 YFW_DOC_TO_MD 指定路径）'))
+    return Promise.resolve(bad('parser-missing', '未找到解析器 doc_to_md.py（确认技能库已安装，或用 PONOS_DOC_TO_MD 指定路径）'))
   }
   const args = [script, '--input', absPath, '--project', 'kb-import',
     '--max-ocr-pages', String(limits.maxOcrPages), '--max-table-rows', String(limits.maxTableRows)]
@@ -728,10 +783,16 @@ export function parseMarkdownTables(md) {
 /**
  * 逐页调视觉模型提取表格，并**并入**对应页的 section。
  *
- * @param data      解析器输出的 JSON（含 sections 与可选 pageImages）
- * @param visionCall `async (imagePath, instruction) => string`（测试注入用；缺省走内核 Vision 同一实现）
- * @param maxPages   页数护栏（默认取 limits.maxVisionPages）
- * @returns 摘要 `{attempted, pages, tables, errors, truncated}`（供报告与 GUI 展示）
+ * 视觉表格回填：把扫描件里"文本层拿不到"的表格用视觉模型读出来，按 `第 N 页` 回填进 sections。
+ * @param {object} p 选项对象（**逐键登记**，见下）
+ * @param {{ pageImages?: Array<{ page?: number, path?: string }>, sections?: Array<object>, warnings?: Array<unknown> }} [p.data] doc_toolkit 输出
+ *   （`pageImages` = 逐页图片路径（`{page, path}`）；`sections` = 已解析出的段落）。★ 必须登记：不写时 TS 只按带默认值的
+ *   绑定推断 ⇒ `data` 缺席，功能体内读 `data?.pageImages` 报 TS2339、调用点传 data 报 TS2353。
+ * @param {Function|null} [p.visionCall] `async (imagePath, instruction) => string`（测试注入用；缺省走内核 Vision 同一实现）
+ * @param {number} [p.maxPages] 页数护栏（默认取 limits.maxVisionPages）
+ * @param {string} [p.instruction] 视觉指令（缺省 VISION_TABLE_INSTRUCTION）
+ * @param {Array<unknown>} [p.warnings] 视觉通道的告警收集器（调用方传空数组，事后并回 data.warnings）
+ * @returns 摘要 `{attempted, pages, tables, errors, truncated, skipped}`（供报告与 GUI 展示）
  *
  * **为什么按 `第 N 页` 标题回填**：解析器把每页渲成一个 section（`heading: '第 N 页'`），
  * 图片输入的 section 无标题（只有 1 页）——两种形状都要能对上，否则表格会落到别的页上去。
@@ -785,11 +846,11 @@ export async function augmentTablesViaVision({
  * 为什么不在这里自己写一遍 HTTP：那会变成"第二份视觉 API 契约"—— 鉴权头、图片编码、
  * Anthropic/OpenAI 两种 body 形状、错误映射都得同步维护，必然漂移（本项目反复踩的病灶）。
  *
- * 为什么动态 import：`tools.mjs` 是内核的大模块，而导入流程在**不用视觉**时（多数情况）
- * 根本不需要它 —— 延迟到真要调用那一刻再加载，顺带避免与 tools.mjs 的静态循环依赖风险。
+ * 为什么不动态 import 了（P2-1 后）：原先延迟加载是为了躲开"与 tools.mjs 的静态循环依赖
+ * 风险"（tools.mjs 又是内核的大模块）。依赖目标已改为 `media-tools.mjs` —— 一个只装载媒体
+ * 工具的薄模块，与本文件**无环**，故在文件顶部静态导入即可，无需为躲环付出延迟加载的复杂度。
  */
 async function defaultVisionCall(imagePath, instruction) {
-  const { visionDescribe } = await import('./tools.mjs')
   // skipBoundary=true：这些 PNG 是**我们自己**刚渲到系统临时目录的中间产物，
   // 不在用户配置的可读目录白名单里（不是用户的文件，无需边界校验）。
   const r = await visionDescribe(imagePath, null, { instruction }, true)
@@ -839,16 +900,23 @@ function atomicWrite(abs, content) {
 /**
  * 导入主流程。
  *
- * @param configDir 配置根（`knowledge/` 的父目录）
- * @param from      导入源（文件或目录，绝对路径）
- * @param space     空间 id（缺省用 name）
- * @param name      空间显示名（新建空间时写进 .space.json）
- * @param dryRun    true = 只报告不落盘（不建目录、不写 md、不写台账）
- * @param converter 可注入的转换器（缺省 defaultConverter；测试注入假实现）
- * @param pythonPath 注入的 python 解释器路径（透传给 defaultConverter；缺省见 resolvePython）
- * @param knowledgeIndex 内核 KnowledgeStore（可选；传了就在导入后同步索引）
- * @param limits    覆盖 IMPORT_LIMITS
- * @param onProgress 进度回调（可选）：批量导入的可观测性。两次调用形状不同——
+ * @param {object} p 选项对象（**逐键登记**，见下）
+ * @param {string} [p.configDir] 配置根（`knowledge/` 的父目录）
+ * @param {string|string[]} [p.from] 导入源（文件或目录，绝对路径；可数组）
+ * @param {string|null} [p.space] 空间 id（缺省用 name）
+ * @param {string|null} [p.name] 空间显示名（新建空间时写进 .space.json）
+ * @param {boolean} [p.dryRun] true = 只报告不落盘（不建目录、不写 md、不写台账）
+ * @param {Function|null} [p.converter] 可注入的转换器（缺省 defaultConverter；测试注入假实现）
+ * @param {string|null} [p.pythonPath] 注入的 python 解释器路径（透传给 defaultConverter；缺省见 resolvePython）
+ * @param {object|null} [p.knowledgeIndex] 内核 KnowledgeStore（可选；传了就在导入后同步索引）
+ * @param {object|null} [p.limits] 覆盖 IMPORT_LIMITS
+ * @param {boolean|'auto'} [p.visionTables] 视觉表格提取的**三态**开关（true=强制 / false=禁用 /
+ *   'auto'=按是否配了视觉模型决定）。★ 必须登记：本函数运行时以 `visionTables === false` /
+ *   `!== false` **精确比较**定分支（见 wantVision / visionSkipReason），若按默认值 `'auto'`
+ *   推断成 `string`，功能体内那两处比较直接报 TS2367（无重叠），调用点透传 boolean 报 TS2322。
+ * @param {Function|null} [p.visionCall] 注入视觉调用（缺省走内核 Vision 同一实现）
+ * @param {boolean|null} [p.visionAvailable] 注入"有没有配视觉模型"（缺省探 env）
+ * @param {Function|null} [p.onProgress] 进度回调（可选）：批量导入的可观测性。两次调用形状不同——
  *                   `{phase:'plan', done:0, total:N, totalBytes}` 在**枚举完文件后立即**触发
  *                   （"先查文件数"，GUI 据此算出总步数）；
  *                   `{phase:'process', done:i, total:N, current:相对路径}` 在**每个文件开始处理时**触发
@@ -857,7 +925,14 @@ function atomicWrite(abs, content) {
  *                   已导入/跳过/被拒/失败四条路（含多条 `continue`），若按成功数计，
  *                   被跳过的文件会让进度条**永远差一截**（分母对不上的经典 bug）。
  *                   按下标计则恒定收敛到 total。回调抛错不影响导入（见 emitProgress）。
- * @returns 结构化报告（见下方 return 形状）
+ *   ★ **为什么必须逐键登记**：不登记时 TS 只按"带默认值的绑定"推断 ⇒ `configDir`/`from`
+ *   缺席（功能体内读它们报 TS2339、调用点传它们报 TS2353），且有默认值的键全部丢真值语义。
+ *   这里只补类型，不改任何运行逻辑。
+ * @returns {Promise<ImportReport>}
+ *   ★ 为什么写**判别式 union**（而不是散文描述）：散文形态下 TS 只能从函数体**推断**返回类型，
+ *   而推断会把 `ok` 宽化成 `boolean`（不是字面量 `true`/`false`）⇒ 调用方 `if (!report.ok)` 早退
+ *   **无法**收窄，读 `report.error` / `report.converted` 一片 TS2339（本文件与 kernel/tools.mjs 实测）。
+ *   写成字面量判别式后，`report.ok === false` 一路收窄（纪律：判别写 `=== false`，truthiness 不生效）。
  *
  * ⚠️ 另有一层**对外主入口** `importFiles(opts)`（本文件末尾）：同一条管线，参数/报告口径按
  * 任务契约（results[].status + summary）。两处共用本函数，不复制任何防护逻辑。
@@ -878,7 +953,9 @@ export async function importDocuments({
   if (!configDir) return { ok: false, error: 'bad-config', message: '缺少 configDir（无法定位知识根）' }
   const wantId = String(space || name || '').trim()
   const idCheck = validateSpaceId(wantId)
-  if (!idCheck.ok) return { ok: false, ...idCheck }
+  // ★ 判别写 `=== false`：validateSpaceId 是字面量判别 union，truthiness 收窄不生效
+  //   （`!idCheck.ok` 时 `{ ok: false, ...idCheck }` 仍是两成员 union ⇒ 报 TS2322）。
+  if (idCheck.ok === false) return { ok: false, ...idCheck }
   const spaceId = idCheck.value
   const displayName = String(name || spaceId).trim()
 
@@ -893,7 +970,8 @@ export async function importDocuments({
   }
 
   const collected = collectFiles(from, { limits })
-  if (!collected.ok) return { ok: false, error: collected.error, message: collected.message }
+  // ★ 判别写 `=== false`（理由同 idCheck 处）
+  if (collected.ok === false) return { ok: false, error: collected.error, message: collected.message }
   const { files, rejected } = collected.value
   if (!files.length && !rejected.length) {
     return { ok: false, error: 'empty-source', message: `导入源里没有可处理的文件：${from}` }
@@ -936,7 +1014,7 @@ export async function importDocuments({
 
   const sourceList = (Array.isArray(from) ? from : [from])
     .map((s) => String(s ?? '').trim()).filter(Boolean)
-  const report = {
+  const report = /** @type {ImportReportOk} */ ({
     // `spaceCreated` 的口径：**本次运行真的把空间建出来了**（延迟创建，见下方 ensureSpace）。
     // 空批次（全批被拒/全部转换失败）时保持 false：不留空空间 + 空 `.space.json`
     // —— 否则 GUI 空间列表会凭空多一个空条目，用户以为"导进去了"而文件树里什么都没有。
@@ -959,7 +1037,7 @@ export async function importDocuments({
     // `configured:false` 而实际已配置，GUI 于是对着"配好了的"用户提示"未配置"。
     // pages/tables 在逐篇处理中累加，skipped 在结尾定稿（dry-run 另给 'dry-run'）。
     vision: { configured: visionConfigured, skipped: visionSkipReason, used: false, pages: 0, tables: 0 },
-  }
+  })
   if (dryRun) {
     // dry-run 也要给出"将跳过谁"：只列"将处理"的话，用户看不出幂等是否生效（那是一半的信息）
     for (const f of files) {
@@ -1367,17 +1445,34 @@ const IMPORT_ERROR_ALIASES = {
  * `results[].status` 四态 + `summary`。白名单/体积/路径防护/台账/落盘/索引同步**全部复用**
  * 上面那份实现（另写一份必然漂移，本项目的反复教训）。
  *
- * @param configDir 配置根
- * @param from      文件或目录（可数组）
- * @param space     空间 id（可写空间；`pack-*` → `readonly-space`）
- * @param name      新建空间的显示名（给了就新建 `knowledge/spaces/<id>/`）
- * @param dryRun    true = 只报告不落盘（results 里的 `imported` 表示"将导入"，未写任何文件）
- * @param maxOcrPages  扫描件 PDF 的 OCR 页数护栏（透传）
- * @param pythonPath   注入 python 解释器（缺省见 resolvePython）
- * @param runDocToMd   注入"文件 → 结构化 JSON"实现：`(filePath, opts) => Promise<{ok, ...}>`。
+ * @param {object} p 选项对象（**逐键登记**，见下）
+ * @param {string} [p.configDir] 配置根
+ * @param {string|string[]} [p.from] 文件或目录（可数组）
+ * @param {string|null} [p.space] 空间 id（可写空间；`pack-*` → `readonly-space`）
+ * @param {string|null} [p.name] 新建空间的显示名（给了就新建 `knowledge/spaces/<id>/`）
+ * @param {boolean} [p.dryRun] true = 只报告不落盘（results 里的 `imported` 表示"将导入"，未写任何文件）
+ * @param {number|null} [p.maxOcrPages] 扫描件 PDF 的 OCR 页数护栏（透传）
+ * @param {string|null} [p.pythonPath] 注入 python 解释器（缺省见 resolvePython）
+ * @param {Function|null} [p.runDocToMd] 注入"文件 → 结构化 JSON"实现：`(filePath, opts) => Promise<{ok, ...}>`。
  *                     返回**扁平**结构即可（与 python 单行 JSON 同形）；内部 `{ok, value}` 形状也收。
- * @param maxFileBytes/maxTotalBytes/maxFiles/maxMdBytes 覆盖默认上限（测试用）
- * @param knowledgeIndex 可选内核 store：传了就在导入后立即同步索引
+ * @param {number|null} [p.maxFileBytes] 覆盖默认上限（测试用）
+ * @param {number|null} [p.maxTotalBytes] 同上
+ * @param {number|null} [p.maxFiles] 同上
+ * @param {number|null} [p.maxMdBytes] 同上
+ * @param {object|null} [p.knowledgeIndex] 可选内核 store：传了就在导入后立即同步索引
+ * @param {number|null} [p.timeoutMs] 转换超时（透传）
+ * @param {boolean|'auto'} [p.visionTables] 视觉表格提取的**三态**开关：true=强制提取、false=禁用、
+ *   'auto'=由"是否配了视觉模型"决定（见下方 importDocuments 的三态解析）。运行时以
+ *   `=== true` / `=== false` **精确比较**定分支 ⇒ 类型必须写 boolean|'auto'：不写时 TS 只按
+ *   默认值 `'auto'` 把该键推断成 `string`，调用点（kernel/tools.mjs 的 KnowledgeImport）
+ *   透传三态就报 TS2322（实测）。
+ * @param {number|null} [p.maxVisionPages] 视觉提取的页数护栏
+ * @param {Function|null} [p.visionCall] 注入视觉调用（缺省走 provider）
+ * @param {boolean|null} [p.visionAvailable] 注入"有没有配视觉模型"（缺省探 env）
+ * @param {Function|null} [p.onProgress] 进度回调（透传给 importDocuments）
+ *   ★ **为什么必须逐键登记**：不登记时 TS 只按"带默认值的绑定"推断 ⇒ `configDir` / `from` /
+ *   非默认值键**全部缺席**（本文件函数体内读它们报 TS2339），而调用点传它们报 TS2353；
+ *   同时 `visionTables` 被推断成 `string`（丢了三态语义）。这里只补类型，不改任何运行逻辑。
  * @returns `{ ok:true, space, spaceName, spaceCreated, spaceExisted, dryRun, targetDir, results, summary, indexSync, warnings }`
  *          （`spaceCreated` = **本次真的建了空间**；无任何产物落盘时为 false，见 importDocuments 里 ensureSpace 的 why）
  *          或 `{ ok:false, error, message }`（error ∈ invalid-space-id|readonly-space|not-found|
@@ -1435,7 +1530,8 @@ export async function importFiles({
     visionTables, visionCall, visionAvailable: visionOverride,
     onProgress,
   })
-  if (!report.ok) {
+  // ★ 判别写 `=== false`：importDocuments 的 @returns 是字面量判别 union，truthiness 收窄不生效
+  if (report.ok === false) {
     return {
       ok: false,
       error: IMPORT_ERROR_ALIASES[report.error] || report.error,
@@ -1476,6 +1572,33 @@ export async function importFiles({
     rejected: results.filter((x) => x.status === 'rejected').length,
     failed: results.filter((x) => x.status === 'failed').length,
   }
+  // ★★ 2026-10-18 SEC-07 补强：**写操作审计留痕**。
+  //
+  // 【为什么需要】知识库的**写**通道（导入/删除）是整个知识面里唯一会改变用户数据的路径，
+  //   而它此前**没有任何审计** —— 出事（写错空间 / 误导入敏感目录 / dryRun 与真实写入混淆）
+  //   之后无法回答"谁在什么时候往哪个空间写了多少"。
+  //   本仓在日志纪律上已有先例（readonly-routes 每次查询都留痕），唯独**写**没有。
+  //
+  // 【为什么不是"按会话已关联空间校验"】那条需要"会话 → 已关联空间"的服务端映射，
+  //   而 `knowledgeSpaces` 目前是**随报文携带、桥侧零状态**的设计（见其定义处注释），
+  //   知识路由**根本不接收 sessionId**。要做会话范围校验，必须给几十处前端调用补参数
+  //   并新增服务端会话状态 —— 那是**设计变更**，不是一次修复。已在台账里记为剩余工作。
+  //   ⇒ 这里先落地当前设计下**可安全实现且真正有用**的那半步：把每次写都记下来。
+  //
+  // 记的是什么（全部为非敏感元数据，不含文件内容）：
+  //   空间、是否新建、dry-run（**关键**：dryRun 也走这条代码路径，不区分会让人误以为真写了）、
+  //   四态计数（imported/skipped/rejected/failed）、落盘目录。
+  try {
+    const dryTag = report.dryRun ? 'dryRun=true' : 'dryRun=false'
+    console.log(
+      `[knowledge-write] space=${report.spaceId} created=${report.spaceCreated === true} ${dryTag} `
+      + `imported=${results.filter((x) => x.status === 'imported').length} `
+      + `skipped=${results.filter((x) => x.status === 'skipped').length} `
+      + `rejected=${results.filter((x) => x.status === 'rejected').length} `
+      + `failed=${results.filter((x) => x.status === 'failed').length} dir=${report.spaceRoot}`,
+    )
+  } catch { /* 审计失败绝不影响导入结果 */ }
+
   return {
     ok: true,
     space: report.spaceId,

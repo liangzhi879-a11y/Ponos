@@ -76,6 +76,26 @@ test('op=update-doc 触发增量更新', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('op=update-doc 对新文档增量插入（added），不为其它新增文件触发全量重建', async () => {
+  const { dir, personal } = fixture()
+  try {
+    // 先建立索引：skipStaleCheck 的收益只在"已有可用索引"时成立
+    await runKnowledgeCommand({ op: 'search', configDir: dir, args: { query: '文件传输助手' } })
+    writeFileSync(join(personal, 'fresh.md'), '- [会话|新增] 全新条目 -- 新文档增量插入\n', 'utf-8')
+    const { output } = await runKnowledgeCommand({
+      op: 'update-doc', configDir: dir, args: { id: 'experience/fresh.md' },
+    })
+    assert.equal(output.updated, true)
+    // 若 update-doc 因"新增文件"走了全量重建，文档已在索引里 ⇒ 不会返回 added。
+    // 故 added 本身就是"写入路径没有被全量重建拖住"的判据（用户实测超时即由此而来）。
+    assert.equal(output.added, true)
+    const { output: s } = await runKnowledgeCommand({
+      op: 'search', configDir: dir, args: { query: '新文档增量插入' },
+    })
+    assert.ok(s.count > 0, '增量插入的文档必须立即可检索')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('op=search 支持单数 --space 空间过滤（Task 11 路由按单数转发）', async () => {
   const { dir } = fixture()
   try {

@@ -106,13 +106,15 @@ function isInside(root, target) {
  * @param {string[]} [opts.roots]      允许根（空 = 该侧不做允许校验）
  * @param {string[]} [opts.denyRoots]  拒绝根（写的硬闸门，如凭据目录）
  * @param {string[]} [opts.denyPaths]  拒绝的**具体文件**（读写都拒，如 settings.json / auth.json）
+ * @param {RegExp}   [opts.denyNamePattern]  按**文件名**拒绝的凭据（.env / *.pem / id_rsa…）——
+ *   这类文件散落在任意目录，无法逐条枚举绝对路径（SEC-01）
  * @param {boolean}  [opts.write]      是否写操作
  * @param {string}   [opts.mode]       覆盖级别（off/warn/enforce）
  * @returns {Promise<string>} realpath 后的绝对路径
  */
 async function guard(input, opts = {}) {
   assertInput(input)
-  const { roots = [], denyRoots = [], denyPaths = [], write = false, mode } = opts
+  const { roots = [], denyRoots = [], denyPaths = [], denyNamePattern = null, write = false, mode } = opts
   const level = mode ?? effectiveGuardMode(write)
   const target = await realpathDeep(input)
 
@@ -131,6 +133,26 @@ async function guard(input, opts = {}) {
       if (fold(await realpathDeep(dp)) === t) {
         throw new FSGuardError('EPROTECTED', 'target is a protected credential file', 403)
       }
+    }
+  }
+
+  // 0-b) 凭据文件**按名字**拒绝（SEC-01，2026-10-18）
+  //
+  // ★ 为什么需要这一层：上一条 `denyPaths` 只做**精确绝对路径**比对，
+  //   而 `.env` / `*.pem` / `id_rsa` 这类"名字本身就是身份"的文件会出现在**任意目录**，
+  //   无法逐条枚举绝对路径。实测缺口：`proj/.env.production`、任意目录下的 `*.pem`
+  //   此前都能被 read-file 直接读走。
+  //
+  // ★ 为什么在 warn 级别下也生效：与本函数里"凭据文件读也拒"的既有取向一致
+  //   （零误伤 + 高价值）。读侧 roots 刻意宽松（文件浏览器要能浏览），
+  //   所以防护必须落在这一类判定上。
+  if (denyNamePattern instanceof RegExp) {
+    const base = target.split(/[\\/]/).pop() || ''
+    if (denyNamePattern.test(base)) {
+      throw new FSGuardError(
+        'EPROTECTED',
+        `target looks like a credential file (${base}) and is protected`, 403,
+      )
     }
   }
 

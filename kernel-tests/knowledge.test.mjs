@@ -1,5 +1,5 @@
 // kernel/knowledge.mjs 测试：空间发现 / 文档解析 / 索引构建 / 检索 / 增量更新。
-// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking。
+// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -479,6 +479,49 @@ test('updateDoc 对不存在的 docId 返回 not-found 且不崩', async () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('updateDoc 对索引里没有但磁盘存在的文档：增量插入（added），无需先全量重建', async () => {
+  const { dir, personal } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const before = store.getDocs().map((d) => d.id)
+    writeFileSync(join(personal, 'fresh.md'), [
+      '---', 'name: fresh', '---',
+      '- [会话|插入] 新文档增量插入 -- 落盘后无需全量重建即可检索',
+    ].join('\n') + '\n', 'utf-8')
+    const r = await store.updateDoc('experience/fresh.md')
+    assert.equal(r.updated, true)
+    assert.equal(r.added, true, 'docId 不在索引里 ⇒ 必须走增量插入（added）')
+    assert.deepEqual(store.getDocs().slice(0, before.length).map((d) => d.id), before, '既有 docIdx 不变')
+    assert.equal(store.getDocs().length, before.length + 1)
+    assert.ok(store.search({ query: '无需全量重建即可检索', topK: 3 }).count > 0, '插入后立即可检索')
+    // 新 store 正常 load() 不得因"新增文件"触发全量重建：per-file 指纹已随插入更新
+    const s2 = createKnowledgeStore({ configDir: dir })
+    await s2.load()
+    assert.equal(s2.stats().builtAt, store.stats().builtAt, '未触发全量重建')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('updateDoc 拒绝越出空间根的新文档 docId（不读根外文件、不扩索引）', async () => {
+  const { dir } = makeFixture()
+  try {
+    const store = createKnowledgeStore({ configDir: dir })
+    await store.load({ force: true })
+    const before = store.getDocs().length
+    for (const id of [
+      'experience/../outside.md',
+      'experience/a/../../outside.md',
+      'experience//x.md',
+      'experience/C:/outside.md',
+    ]) {
+      const r = await store.updateDoc(id)
+      assert.equal(r.updated, false, id)
+      assert.equal(r.reason, 'not-found', id)
+    }
+    assert.equal(store.getDocs().length, before, '拒绝的 docId 不得扩索引')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('updateDoc 对已删除的文件返回 file-missing 且不崩', async () => {
   const { dir, notes } = makeFixture()
   try {
@@ -590,7 +633,7 @@ test('knowledgeRoot：<configDir>/knowledge，且 configDir 缺省不抛错', ()
   // 直接测而不是只靠间接覆盖：这个函数决定"知识库放哪"，是发布版与调试版共同的落点，
   // 写错会让索引写到别处而表现为"检索永远为空"。函数刻意不自解析 home（由调用方给），
   // 所以 configDir 为空的退化输入也应稳定返回相对路径而非抛错。
-  assert.equal(knowledgeRoot('/home/u/.yfworking'), join('/home/u/.yfworking', 'knowledge'))
+  assert.equal(knowledgeRoot('/home/u/.ponos'), join('/home/u/.ponos', 'knowledge'))
   assert.equal(knowledgeRoot(''), join('', 'knowledge'))
   assert.equal(knowledgeRoot(undefined), join('', 'knowledge'))
   const winPath = ['C:', 'Users', 'u'].join(String.fromCharCode(92))

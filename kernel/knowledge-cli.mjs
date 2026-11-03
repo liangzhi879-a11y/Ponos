@@ -14,6 +14,14 @@ import { createKnowledgeStore, knowledgeRoot } from './knowledge.mjs'
 // 引的是 `validateAppendEntry` + `appendMemoryEntry`，后者已内含幂等去重（hashLine）
 // 与增量索引同步（syncKnowledgeIndex），故写完立刻可被检索、关联也随之更新。
 import { appendMemoryEntry, listMemoryTags, validateAppendEntry, memoryRoot } from './memory.mjs'
+// 【S2-D6 标签实体化】生产接线：`tags` / `index-tags` 两个读 op 在这两行下方注入"标签解析器"，
+// 让被合并掉的写法（别名）折叠到规范实体上。**不新增 CLI flag** —— `kernel/cli.mjs` 的转发层
+// 有"漏登记一个键即**静默失效**"的反复踩坑史（`--spaces`/`--tag`/`doc`/`related` 均栽过），
+// 新增 flag 就要同时改 parseArgs + 转发层 + 真进程回归；本能力挂在既有 op 上，少一个高危面。
+import { makeTagResolver } from './tag-store.mjs'
+// 【S3 内容协同】把**团队知识空间**（`team-<teamId>`，指向团队源目录）挂进 store。
+// `safeTeamSpaceSpecs` 在"未加入任何团队/配置损坏"时返回 `[]` ⇒ 与改造前逐字一致（零回归）。
+import { safeTeamSpaceSpecs } from './team-sync.mjs'
 // 文件知识库导入（2026-09-14）：实现全在 knowledge-import.mjs，本文件只做 op 分发。
 import { importDocuments } from './knowledge-import.mjs'
 // MAX_RELATED 从 shared 中性层取（不另写一个字面量 8）：CLI 的缺省必须与内核缺省同源，
@@ -70,6 +78,12 @@ const OPS = new Set([
   // 且**不重载索引**（内容与路径都没变）。合进 delete-doc 就得给它加个 mode 开关，
   // 而"删除"是最不能出歧义的操作 —— 宁可多一个 op。
   'stash-doc',
+  // 索引存储升级（2026-09-29）：`migrate-index --to sqlite` —— 把现有 jsonl 索引灌进 SQLite 库
+  //（一次性、显式发起；spec §5.4 的重建链）。为什么是**显式命令**而不是"打开就自动迁"：
+  //  ① 迁移要读全量 jsonl + 写库（实测 1.4 s 起，语料越大越久），不该塞进每次冷启动；
+  //  ② 后端的切换开关是 `knowledgeIndexBackend`（缺省 jsonl），迁移与启用必须**分开**——
+  //     否则"试一下 sqlite"就等于不可逆地改了库状态（用户没法先建库看看再决定）。
+  'migrate-index',
 ])
 
 /**
@@ -80,7 +94,17 @@ const OPS = new Set([
  * 处的长注释）：拼错的 `PONOS_HOME` 会让写操作静默长出一棵没人找得到的树。
  * `trash-list` 是**读**（列回收站），不在本表 —— 根不存在时返回空清单是合理语义。
  */
-const WRITE_OPS = new Set(['append', 'import', 'delete-doc', 'delete-space', 'restore', 'purge', 'stash-doc'])
+const WRITE_OPS = new Set(['append', 'import', 'delete-doc', 'delete-space', 'restore', 'purge', 'stash-doc', 'migrate-index'])
+
+/**
+ * **不需要块内容**的只读 op：只解析空间/文档元数据就够（`store.loadMeta()`），
+ * 不必把 110,151 行块表拉进内存。加新 op 进这张表的**前提**是它不碰 `doc.blocks`
+ * —— `spaces`(只要 docCount) / `tree`(只要文件系统 + 空间元数据) / `stats`(块数取 meta.nBlocks)。
+ *
+ * 为什么值得单独列：这三个是 GUI 进知识库时的**首屏三个请求**，改前每个都要 2.6~2.8 s
+ * （子进程冷启 + 全量 load），且预热无效（每请求新进程）。
+ */
+const META_ONLY_OPS = new Set(['spaces', 'tree', 'stats'])
 
 /**
  * `--limit` 解析（S5 §7.3）：非负整数照收（0 合法——只想要 duplicate 标记时用得上）；
@@ -110,7 +134,8 @@ function relatedParams(args) {
   if (!id) return { ok: false, error: 'related: missing --id (blockId 形如 <docId>#<n>)' }
   if (!isBlockId(id)) return { ok: false, error: `related: invalid blockId: ${id}（须为 <docId>#<n>）` }
   const lim = parseLimit(args.limit)
-  if (!lim.ok) return lim
+  // JSDoc 字面量判别 union 用 `=== false` 收窄（truthiness 收窄实测不生效，见 .yfworking/process/step2-type 探针）
+  if (lim.ok === false) return lim
   return { ok: true, id, limit: lim.value }
 }
 
@@ -137,6 +162,13 @@ function parseSpacesArg(args = {}) {
   return parts.length ? parts : null
 }
 
+/**
+ * 知识库 CLI 分发器：`--knowledge <op> [args...]` 入口。
+ * @param {{ op?: string, args?: Record<string, any>, configDir?: string, onEvent?: any }} [opts]
+ *   `args` = argv 原始解析结果，字段随 op 而异、由各 op 自取，故 Record<string, any>；
+ *   `onEvent` = 进度旁路（回调或 null，形状由调用方定义），故 any。
+ * @returns {Promise<{ output: object, code: number }>}
+ */
 export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEvent = null } = {}) {
   const name = String(op || '').trim()
   if (!OPS.has(name)) {
@@ -158,31 +190,49 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
   // 拼错的 `PONOS_HOME` 会长出一整棵没人找得到的资料树，故共用同一道短路。
   if (WRITE_OPS.has(name) && !rootExistedBefore) {
     return {
-      output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/CLAUDE_CONFIG_DIR 指向了错误的路径？）` },
+      output: { error: 'bad-root', message: `配置根不存在: ${configDir}（PONOS_HOME/PONOS_CONFIG_DIR 指向了错误的路径？）` },
       code: 1,
     }
   }
-  const store = createKnowledgeStore({ configDir })
+  // configDir 是 createKnowledgeStore 运行时实际接收的可选项，其 JSDoc 未登记（callee 缺口，正式补全在 knowledge.mjs 任务）
+  const store = createKnowledgeStore(/** @type {{ configDir?: string, extraSpaceSpecs?: any[] }} */ ({ configDir, extraSpaceSpecs: safeTeamSpaceSpecs(configDir) }))
   try {
     // reindex 必须 force（用户显式要求重建）；其余 op 走"按需加载"（索引缺失/过期时
     // 内部自动全量重建），但 `--force` 可把任一 op 提到强制重建。load 是同步函数
     // （Task 6 的契约）——此处不写 await。
     //
-    // ⚠️ `import --dry-run` **必须跳过**这次 load：`load()` 会按需建
+    const dryRunImport = name === 'import' && args.dryRun === true
+    if (dryRunImport) {
+      // 跳过 load（理由见下）
+    } else if (META_ONLY_OPS.has(name) && !args.force) {
+      // ★ 只读元数据的 op 走**轻量加载**（不读块表，实测把 2.6~2.8 s 降到 ~0.3 s）。
+      //   改前这里对所有 op 无条件 `store.load()` ⇒ 进知识库的每个 HTTP 请求都要付
+      //   "子进程冷启 + 110,151 行块表加载"。预热治不了它（每请求新进程），
+      //   这正是"预热 50 s 后进知识库仍然卡"的根因。见 `loadMeta()` 的注释。
+      //   `--force` 时不走轻量路径：用户显式要求重建时，交回全量 load 保持原语义。
+      store.loadMeta()
+    } else {
+      // update-doc 是**写入路径**：只关心目标文档。库健康时跳过 staleness 复核，避免
+      // "别的文件新增/改动 ⇒ 先全量重建"（真实库实测 30-40 s，直接越过前端写超时；
+      // 用户看到的"会话蒸馏超时"就是这条路径）。目标文档不在索引里时 updateDoc 会
+      // **增量插入**（见 knowledge.mjs#newDocTargetOf）。`--force` 仍按显式要求全量重建。
+      const skipStaleCheck = name === 'update-doc' && args.force !== true
+      store.load({ force: name === 'reindex' || args.force === true, skipStaleCheck })
+    }
+    // ⚠️ `import --dry-run` **必须跳过** load：`load()` 会按需建
     // `<configDir>/knowledge/.index/` 并把索引写盘，于是"预览"也在硬盘上留下痕迹
     // （实测：dry-run 后出现 `.index/{manifest,docs,inverted,links,related}` 与空 jsonl）。
     // spec P2-2 的措辞是"不写任何文件"，预览就该**零落盘副作用**（连索引脚手架都不该有）。
     // 该分支另有 guard：dry-run 下传 `knowledgeIndex: null`（模块内部也提前 return，从不读它），
     // 故不 load 不会让任何消费方拿到"半初始化的 store"。
-    const skipLoad = name === 'import' && args.dryRun === true
-    if (!skipLoad) store.load({ force: name === 'reindex' || args.force === true })
 
     switch (name) {
       case 'spaces':
         return { output: { spaces: store.getSpaces() }, code: 0 }
       case 'tree':
         return {
-          output: { entries: store.listTree({ space: String(args.space || ''), path: String(args.path || '') }) },
+          // space 是 listTree 运行时实际接收的可选项，其 JSDoc 未登记（callee 缺口）
+          output: { entries: store.listTree(/** @type {{ space?: string, path?: string }} */ ({ space: String(args.space || ''), path: String(args.path || '') })) },
           code: 0,
         }
       case 'doc':
@@ -231,7 +281,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         const docArg = String(args.doc ?? '').trim()
         if (docArg && !String(args.id ?? '').trim()) {
           const lim = parseLimit(args.limit)
-          if (!lim.ok) return { output: { error: lim.error }, code: 1 }
+          // 同 relatedParams：JSDoc 字面量判别 union 用 `=== false` 收窄
+          if (lim.ok === false) return { output: { error: lim.error }, code: 1 }
           const validate = args.noValidate !== true
           const blocks = store.getRelatedForDoc(docArg, { validate, limit: lim.value })
           // 只给锚点摘要（同 --id 支）：卡片所需的一切都在 why 里，正文由 /knowledge/doc 给
@@ -245,7 +296,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         // 这里的 id 是 **blockId**，形状错了（含缺省空串）必须报错——否则 `--id` 写漏
         // 会返回空数组，看起来像"这个块没有关联"，把参数错误伪装成数据事实。
         const p = relatedParams(args)
-        if (!p.ok) return { output: { error: p.error }, code: 1 }
+        // 同 relatedParams：JSDoc 字面量判别 union 用 `=== false` 收窄
+        if (p.ok === false) return { output: { error: p.error }, code: 1 }
         // `--no-validate`：关掉读时校验，返回物化里**原样存着**的边（调试用：看存量边
         // 为何在正常视图里消失）。缺省 true 是正常路径（陈旧边必须剔除，spec §6.2）。
         // 显式 `!== true`：只有解析到 true 才关校验，undefined/'false' 都按"开着"处理
@@ -294,14 +346,52 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
       case 'update-doc':
         // updateDoc 是同步函数（同 load）：增量更新后立即落盘，故此处也不写 await。
         return { output: store.updateDoc(String(args.id || '')), code: 0 }
+      case 'migrate-index': {
+        // 索引存储升级（2026-09-29）：jsonl → SQLite（一次性、显式发起）。
+        //
+        // `--to` 只认 `sqlite`：反向迁移（sqlite → jsonl）没有意义 —— jsonl 索引**始终存在**
+        // 且始终由内核维护（sqlite 是派生物），切回后端只是改配置。故这里没有 `--to jsonl`
+        // 这条路径可走，写错值必须**明确报错**而不是静默做别的事（与 `--limit` 同一条纪律：
+        // 参数错误被读成"操作成功"是最贵的一类假信号）。
+        const to = String(args.to ?? '').trim().toLowerCase()
+        if (to !== 'sqlite') {
+          return {
+            output: {
+              error: 'bad-target',
+              message: `migrate-index: --to 只接受 sqlite（收到 ${JSON.stringify(args.to ?? '')}）；回退到 jsonl 只需把 config.json 的 knowledgeIndexBackend 置为 "jsonl"`,
+            },
+            code: 1,
+          }
+        }
+        // 动态 import：SQLite 后端只在真的要迁移时才加载（与 `--knowledge` 本身同一条纪律 ——
+        // 普通会话不为它付模块解析成本，也不让 `node:sqlite` 的实验性告警出现在无关路径上）。
+        const { migrateToSqlite, dbPathOf } = await import('./knowledge-backend-sqlite.mjs')
+        // 复用本进程已 load 的 store（上面的 `store.load(...)` 刚跑过）：迁移源就是它，
+        // 再新建一个 store 会白付一次冷加载（实测 2.1 s 量级）。
+        const stat = migrateToSqlite({ configDir, store })
+        // 回显目标路径 + 统计：迁移是**写**操作（且用户要据此决定是否切后端），
+        // 不回显路径就没法确认"库到底建在哪、是不是这个 config 根"。
+        return {
+          output: {
+            ok: true, backend: 'sqlite', dbPath: dbPathOf(configDir),
+            // `load({})` 已在上面执行 ⇒ jsonl 索引已是最新，这正是迁移源可靠的前提
+            ...stat,
+            note: '后端开关在 config.json#knowledgeIndexBackend（缺省 jsonl）；本命令只建库、不改开关',
+          },
+          code: 0,
+        }
+      }
       case 'tags':
         // S6：标签枚举（读侧"写前先查"的依据）。纯读、无副作用。
-        return { output: listMemoryTags(configDir), code: 0 }
+        // 【S2-D6】按注册表解析规范名后再枚举 ⇒ 「合并后标签真的变少」体现出来。
+        // 解析只读注册表（不注册、不写盘），故仍是**纯读**：注册发生在合并时与 `reindex`（见下）。
+        return { output: listMemoryTags(configDir, { tagResolver: makeTagResolver(/** @type {Parameters<typeof makeTagResolver>[0] & { configDir?: string }} */ ({ configDir })) }), code: 0 }
       case 'index-tags': {
         // 2026-09-14（批次 1）：全库文档标签枚举。`--spaces a,b` 限定空间，
         // 缺省 = 全部空间。参数解析口径与 search 逐字一致（见 parseSpacesArg）。
         const only = parseSpacesArg(args)
-        return { output: store.listIndexTags({ spaces: only }), code: 0 }
+        // 【S2-D6】同上：聚合前把每个裸字符串解析成规范名，别名折叠到同一实体上计数。
+        return { output: store.listIndexTags({ spaces: only, tagResolver: makeTagResolver(/** @type {Parameters<typeof makeTagResolver>[0] & { configDir?: string }} */ ({ configDir })) }), code: 0 }
       }
       case 'append': {
         // S6：**唯一的写 op**（append-only）。
@@ -315,7 +405,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         // 四道闸门（校验失败**一个字节都不落盘**）：
         //   协议文本 / 空模板 / 正文过短(<MIN_LEN，入库即成孤立条目) / tag 与 theme 字符合法性
         const text = String(args.text ?? '')
-        const v = validateAppendEntry({ text, tag: args.tag ?? null, theme: args.theme ?? null })
+        // text 是 validateAppendEntry 运行时实际接收的项，其 JSDoc 未登记（callee 缺口）
+        const v = validateAppendEntry(/** @type {{ text: string, tag: string | null, theme: string | null }} */ ({ text, tag: args.tag ?? null, theme: args.theme ?? null }))
         if (!v.ok) return { output: { error: v.error, message: v.message }, code: 1 }
         // ⚠️ `root` 是 **`memoryRoot(configDir)`**（= `<configDir>/memory/personal`），
         // 不是 `configDir` 本身 —— `appendMemoryEntry` 内部直接 `themePath(root, theme)`
@@ -329,9 +420,28 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
           root,
           theme: v.theme,
           tag: v.tag,
-          // summary 取正文首行截断（列表页展示用）；full 存全文（S5 起 full 才是关联与检索的主口径）
-          summary: text.trim().split('\n')[0].slice(0, 60),
-          full: text.trim(),
+          // ★★ 2026-09-30 修（读写口径不一致）：**与读侧 `parseEntryLine` 同口径**——
+          //   正文按**首个 ` -- `** 切：前段 = summary、后段 = full。
+          //
+          //   改前：`summary = text.trim().split('\n')[0].slice(0, 60)`（首行截断 60 字）+ `full = 整段`。
+          //   而本仓**调用约定**（系统提示与 sediment 指令都这么教）是 `--text "<摘要> -- <全文>"`
+          //   ⇒ 整段被当 summary，再与 full 拼成一行 ⇒ 实测条目长这样（按 ` -- ` 切分）：
+          //     seg0=[会话|tag] <前60字>   seg1=<全文前35字预览>   seg2=<摘要>   seg3=<全文>
+          //   三个后果：① 摘要与全文**各出现两次**（存储膨胀）；
+          //     ② `full` 前缀被摘要污染（检索结果里 full 以残句开头）；
+          //     ③ summary 被硬截断在句中（列表页显示 `… ★★ ` 这种半句）。
+          //   改后：分隔符存在 ⇒ 切分；**不存在 ⇒ 两者都取整段**（保持"只传正文"也能用，
+          //   与 parseEntryLine 的 `sep < 0` 分支语义一致）。
+          summary: (() => {
+            const t = text.trim()
+            const sep = t.indexOf(' -- ')
+            return sep >= 0 ? t.slice(0, sep).trim() : t
+          })(),
+          full: (() => {
+            const t = text.trim()
+            const sep = t.indexOf(' -- ')
+            return sep >= 0 ? t.slice(sep + 4).trim() : t
+          })(),
           knowledgeIndex: store,
         })
         // `deduped` 必须回显：调用方要能区分"写进去了"与"早就有了"——
@@ -379,6 +489,12 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         // 变成一个需要读文档才知道要打开的隐藏开关。
         // 页数上限同样**非法值报错**（理由同 --max-ocr-pages：视觉按页计费，静默回落 = 账单失真）。
         const rawVision = args.visionTables
+        // 三态 'auto'/true/false：callee 以 `=== true` / `=== false` 精确比较定分支
+        // （knowledge-import.mjs 的 wantVision / visionSkipReason）。★ 此前这里是 `@type {any}`
+        // 桥接（当时 callee 把该参按默认值 'auto' 推断成 string）；S2.1 Task 8 已在 callee 侧
+        // 正式登记 `visionTables?: boolean|'auto'` ⇒ **桥接已回收**，改用它本身的三态类型
+        // （类型面收紧，运行期一字未动：取值仍是 false / true / 'auto' 三种）。
+        /** @type {boolean|'auto'} */
         let visionTables = 'auto'
         if (rawVision !== undefined && rawVision !== null && String(rawVision) !== '') {
           const v = String(rawVision).toLowerCase()
@@ -446,6 +562,8 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
           ...(mf.value === null ? {} : { maxBatchFiles: mf.value }),
           ...(mt.value === null ? {} : { maxBatchBytes: mt.value * MB }),
         }
+        // 裸调用：configDir / from 已在 callee（kernel/knowledge-import.mjs#importDocuments）的形参
+        // 注解里正式登记（S2.1 Task 8 收口），故此前那句"实参位断言"已回收。
         const report = await importDocuments({
           configDir, from,
           space: args.space ?? null, name: args.name ?? null,
@@ -462,7 +580,9 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
           // 函数缺失即静默 ⇒ 单次调用语义与之前完全一致（既有消费者不受影响）。
           onProgress: typeof onEvent === 'function' ? (evt) => onEvent({ type: 'progress', ...evt }) : null,
         })
-        if (!report.ok) return { output: { error: report.error, message: report.message }, code: 1 }
+        // 判别式收窄：callee 的 @returns 已是字面量判别 union（`ok: true | false`，Task 8 收口），
+        // 故这里的 `reportShape` 投影已回收；判别式一律写 `=== false`（truthiness 收窄不生效）。
+        if (report.ok === false) return { output: { error: report.error, message: report.message }, code: 1 }
         // 三档计数一并回显：调用方（GUI/agent）要能一眼看出"成功了几篇、跳过了几篇、失败几篇及原因"，
         // 只回 ok 等于让用户去猜到底导进去了什么。
         // ⚠️ 逐文件失败**不算** op 失败（exit 0）：op 已正常完成并交出报告，失败明细在
@@ -492,14 +612,18 @@ export async function runKnowledgeCommand({ op, args = {}, configDir = '', onEve
         // 软删除单个条目。空间/路径的合法性一律由内核 `deleteGate` + `normalizeMdRel` 判，
         // 本层只做"参数是否给全"的粗筛（未给就明确报错，不通融成空 path）。
         const r = store.deleteDoc({ space: args.space ?? null, path: args.path ?? null })
-        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        // 同上：成功分支无 error 字段，投影到失败形状
+        const rs = /** @type {{ ok: boolean, error?: string, message?: string }} */ (r)
+        if (!rs.ok) return { output: { error: rs.error, message: rs.message }, code: 1 }
         return { output: r, code: 0 }
       }
       case 'delete-space': {
         // 软删除整个**用户自建**空间。内置经验库/会话记忆库不可删整库（内核 protected-space），
         // 知识包只读（readonly-space）；`--confirm` 必须精确等于空间 id（防手滑删库）。
         const r = store.deleteSpace({ space: args.space ?? null, confirm: args.confirm ?? null })
-        if (!r.ok) return { output: { error: r.error, message: r.message }, code: 1 }
+        // 同上：成功分支无 error 字段，投影到失败形状
+        const rs = /** @type {{ ok: boolean, error?: string, message?: string }} */ (r)
+        if (!rs.ok) return { output: { error: rs.error, message: rs.message }, code: 1 }
         return { output: r, code: 0 }
       }
       case 'restore': {

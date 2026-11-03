@@ -52,6 +52,38 @@ export const SYSTEM_INJECT_MARK = 'systemInjection'
 export const SYSTEM_INJECT_EXTRA = Object.freeze({ [SYSTEM_INJECT_MARK]: true })
 
 /**
+ * 系统提示的**类型标记**（2026-10-30，跨层契约：kernel 写 / GUI 读）。
+ *
+ * 为什么需要第二层标记：`systemInjection: true` 解决的是"这是不是用户发言"（展示层一律静默），
+ * 但用户对**其中一类**另有要求——「用户断点回复拉起 agent，不要使用用户发言气泡，做特定系统
+ * 提示气泡显示，弱化存在感…提示气泡可以直接加入『继续』按钮」。
+ * ⇒ 光有布尔标记只能全局开关，做不到"白名单显示某几类、其余继续静默"。
+ * 故加一个**受限枚举**：只有登记在这里的 kind 会在会话里以弱化气泡出现，
+ * 未知/缺失 kind 一律维持原行为（静默滤除）——新增 kind 必须在 GUI 侧同时登记渲染策略，
+ * 否则仍是静默（安全默认，不会因为内核多写一个字段就把内部注入泄漏到用户历史）。
+ *
+ * 当前值：
+ *   · 'resume' —— 用户点「继续」续上中断的内核会话。内容仍是一条普通 user 文本
+ *     （模型侧语义分毫不变），只在展示层渲染成弱化系统气泡。
+ */
+export const SYSTEM_INJECT_KIND = 'systemInjectionKind'
+
+/** kind 枚举（真源；GUI 侧 `src/lib/transcriptAdapter.ts` 的 VISIBLE_KINDS 必须与之同步） */
+export const SYSTEM_INJECT_KINDS = Object.freeze({
+  resume: 'resume',
+})
+
+/**
+ * 带类型的打标 extra。缺省（无 kind）返回纯布尔标记那个常量本身
+ * —— 保持既有调用点逐字节不变（对象同一性也不变，便于测试断言）。
+ */
+export function systemInjectExtra(kind) {
+  const k = typeof kind === 'string' ? kind.trim() : ''
+  if (!k) return SYSTEM_INJECT_EXTRA
+  return Object.freeze({ ...SYSTEM_INJECT_EXTRA, [SYSTEM_INJECT_KIND]: k })
+}
+
+/**
  * 守卫⑥：本轮是否取得**实质进展**。
  * 口径：有任一"成功且非只读测量"的工具结果即为进展。
  * - `Browser` 的 `js`/`snapshot` 是**只读测量**（用于观察而非改变状态）→ 不算进展，

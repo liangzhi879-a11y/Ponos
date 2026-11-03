@@ -82,7 +82,7 @@ test('Grep：path 指向点目录内文件仍可搜（事故现场原形：path 
   // 不经父级剪枝——否则"只搜这一个文件"会被剪枝误伤成全无结果。
   const env = makeEnv()
   try {
-    const dotDir = join(env.cwd, '.yfw', 'projects', 'x')
+    const dotDir = join(env.cwd, '.ponos', 'projects', 'x')
     mkdirSync(dotDir, { recursive: true })
     const target = join(dotDir, 'call_00_abc.json')
     writeFileSync(target, '{"tool":"Grep","NEEDLE":"here"}\n')
@@ -128,10 +128,10 @@ test('Glob：path 收窄生效，越界拒绝', async () => {
 
 test('Grep：条目预算触发时返回已得结果 + 收窄提示（不是空手失败）', async () => {
   const env = makeEnv()
-  const prevEntries = process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES
-  const prevMs = process.env.YFW_TOOL_SCAN_BUDGET_MS
-  process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES = '2' // 第 3 个条目即超预算
-  process.env.YFW_TOOL_SCAN_BUDGET_MS = '600000' // 时间预算放宽，隔离出条目预算
+  const prevEntries = process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES
+  const prevMs = process.env.PONOS_TOOL_SCAN_BUDGET_MS
+  process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES = '2' // 第 3 个条目即超预算
+  process.env.PONOS_TOOL_SCAN_BUDGET_MS = '600000' // 时间预算放宽，隔离出条目预算
   try {
     // cwd 下两个子目录各含一个匹配文件：无论 readdir 顺序如何，第 2 个条目
     // （先被遍历的那个目录里的文件）必已产出结果，第 3 个条目触发截断
@@ -143,20 +143,20 @@ test('Grep：条目预算触发时返回已得结果 + 收窄提示（不是空�
     assert.match(rec, /⚠ 扫描超出条目预算/)      // 且明确标注不完整
     assert.match(rec, /收窄 path/)               // 渐进式披露：给出下一步
   } finally {
-    if (prevEntries === undefined) delete process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES
-    else process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES = prevEntries
-    if (prevMs === undefined) delete process.env.YFW_TOOL_SCAN_BUDGET_MS
-    else process.env.YFW_TOOL_SCAN_BUDGET_MS = prevMs
+    if (prevEntries === undefined) delete process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES
+    else process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES = prevEntries
+    if (prevMs === undefined) delete process.env.PONOS_TOOL_SCAN_BUDGET_MS
+    else process.env.PONOS_TOOL_SCAN_BUDGET_MS = prevMs
     env.cleanup()
   }
 })
 
 test('Grep：截断导致的零结果不得回报"无匹配"（否则模型会判定目标不存在而收手）', async () => {
   const env = makeEnv()
-  const prevEntries = process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES
-  const prevMs = process.env.YFW_TOOL_SCAN_BUDGET_MS
-  process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES = '1'
-  process.env.YFW_TOOL_SCAN_BUDGET_MS = '600000'
+  const prevEntries = process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES
+  const prevMs = process.env.PONOS_TOOL_SCAN_BUDGET_MS
+  process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES = '1'
+  process.env.PONOS_TOOL_SCAN_BUDGET_MS = '600000'
   try {
     // 遍历根是目录：第 1 个条目用于进入子目录，真正的文件在第 2 个条目就被预算掐掉
     const r = await env.tools.registry.Grep.run({ pattern: 'NEEDLE', path: env.cwd })
@@ -164,10 +164,10 @@ test('Grep：截断导致的零结果不得回报"无匹配"（否则模型会�
     assert.match(String(r.content), /不能据此判定不存在/)
     assert.doesNotMatch(String(r.content), /无匹配行/)
   } finally {
-    if (prevEntries === undefined) delete process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES
-    else process.env.YFW_TOOL_SCAN_BUDGET_ENTRIES = prevEntries
-    if (prevMs === undefined) delete process.env.YFW_TOOL_SCAN_BUDGET_MS
-    else process.env.YFW_TOOL_SCAN_BUDGET_MS = prevMs
+    if (prevEntries === undefined) delete process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES
+    else process.env.PONOS_TOOL_SCAN_BUDGET_ENTRIES = prevEntries
+    if (prevMs === undefined) delete process.env.PONOS_TOOL_SCAN_BUDGET_MS
+    else process.env.PONOS_TOOL_SCAN_BUDGET_MS = prevMs
     env.cleanup()
   }
 })

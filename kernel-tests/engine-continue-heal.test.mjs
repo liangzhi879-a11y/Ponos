@@ -17,7 +17,7 @@ import { estimateMessage, estimateHistory } from '../kernel/context.mjs'
 function makeEnv({ outputTokens }) {
   process.env.PONOS_MOCK_TRUNCATE_CONT = '1'
   process.env.PONOS_MOCK_TRUNCATE_CONT_N = '0'
-  process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(outputTokens)
+  process.env.PONOS_MAX_OUTPUT_TOKENS = String(outputTokens)
   const events = []
   const wire = {
     assistant: () => {}, result: () => {}, controlRequest: () => {},

@@ -13,7 +13,7 @@
 //      按文档口径算出的余弦、且该语料下按块口径明显不同（>0.01）"这条可观测断言锁住口径。
 //      谁把 `buildRelIdf()` 换回检索 idf，这个断言立刻红。
 //
-// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离纪律：mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'

@@ -23,7 +23,16 @@ import { streamMessages } from './api.mjs'
 import { buildRelevantMemory, appendMemoryEntry } from './memory.mjs'
 import { renderTemplate, resolvePath, evalCondition } from './workflow-dsl.mjs'
 import { matchesCatastrophic, CATASTROPHIC_REASON } from './blacklist.mjs'
+import { EGRESS_WEB_TOOLS } from '../shared/egress-tools.mjs'
+// AI-03 出网目标收敛：判据唯一实现在 shared/address-policy.mjs（见该文件头）。
+// 「network 授权」与「目标地址合规」是**两道独立的闸**：授权回答"这次运行准不准出网"，
+// 地址策略回答"这个目标能不能打"——用户点了「访问网络」不等于允许把请求打到 127.0.0.1。
+import { assertAllowedUrl } from '../shared/address-policy.mjs'
 import { schedule } from './workflow-dag.mjs'
+// 平台能力层（2026-10-09 迁移）：路径比较的大小写语义从能力层取，不再自写平台判定。
+// 模块级缓存一次（进程内 platform 不变）。
+import { platformCapabilities } from '../shared/platform-capabilities.mjs'
+const CAPS = platformCapabilities()
 
 export function createNodeExecutor({ registry = null, getModel = () => '', memoryRoot = '', engine = null } = {}) {
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
@@ -157,7 +166,15 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const query = renderTemplate(node.query || node.input || '', ctx.vars)
     const keywords = String(query).split(/[\s,，、;；]+/).filter(Boolean)
     const root = ctx.memoryRoot || memoryRoot || ''
-    const text = root ? buildRelevantMemory({ root, keywords, maxBytes: node.max_bytes || 2048 }) : '（未配置记忆库根目录）'
+    // ★ 2026-09-30 统一经验通路的**配套调整**（本节点是被统一的两条路之一，见 kernel/memory-rank.mjs 头）：
+    //   · 预算键从 `max_bytes` 改为 **`max_chars`**（单位由 UTF-8 字节改为**字符**）：
+    //     旧口径下中文条目 665 字 ≈ 1995 字节，超过默认 2048 ⇒ **一条都塞不下、节点输出为空**。
+    //   · `max_bytes` 保留为兼容键（**按同数值当字符**用）——老流程不必改配置即可拿到修好的行为。
+    //   · 新增 `top_k`（0/缺省 = 不限，直到预算用尽；>0 时封顶）与 `query`（缺省用关键词拼接）。
+    const budget = node.max_chars ?? node.max_bytes ?? 2048
+    const text = root
+      ? buildRelevantMemory({ root, keywords, query, maxChars: budget, topK: node.top_k || 0 })
+      : '（未配置记忆库根目录）'
     return { output: { text, keywords } }
   }
 
@@ -287,7 +304,17 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const timeoutMs = node.timeout_ms || 300_000
     const waiter = ctx.confirmWaiters?.create ? ctx.confirmWaiters.create(runId, nodeId, timeoutMs) : null
     ctx.event?.('confirm_request', { runId, node: nodeId, message, inputs: node.inputs || [], timeout_ms: timeoutMs })
-    if (!waiter) return { output: { action: 'approved', comment: '' }, route: 'approved' }
+    // ★ 无审批通道 ⇒ **默认不批**（fail-closed），与同文件 Bash 的姿态一致
+    //   （":412 无审批通道 ⇒ 默认拒绝"）。原实现返回 approved 并照常激活 approved 分支：
+    //   引擎恒注入 confirmWaiters，所以现网这条是死分支；但 executeNode 也被测试/宿主直连使用，
+    //   "审批节点静默通过"是绝不能留的缺省语义。
+    if (!waiter) {
+      return {
+        output: { action: 'timeout', comment: '没有可用的审批通道，按未批准处理', timed_out: true },
+        route: 'timeout',
+        isError: true,
+      }
+    }
     const r = await waiter.promise
     ctx.event?.('confirm_resolved', { runId, node: nodeId, action: r.action, comment: r.comment, timed_out: r.timed_out })
     if (r.timed_out) return { output: { action: 'timeout', comment: r.comment || '' }, route: 'timeout' }
@@ -296,6 +323,29 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   }
 
   function execCode(node, ctx) {
+    // ★★ 2026-10-18 AI-06 修复：`code` 节点执行**任意 JS**，但此前**没有任何授权判定** ——
+    //   而同一文件的 `http` 节点早就有 `grant.network` / `permissions.network` 的判据（见上方长注释）。
+    //   不对称的后果很具体：把一段 `code` 写进工作流，就能在**无人值守入口**（定时 / webhook /
+    //   子流程）里执行任意代码，绕开 `checkToolPermission`（那是给**工具调用**用的，
+    //   code 节点根本不走工具审批）。工作流文件因此等价于"可直接执行的脚本"。
+    //
+    //   判据与 http 节点**完全对称**（不发明第二套规则）：
+    //     有本次运行的交互授权 `grant` ⇒ 允许（用户当场同意了这次运行）
+    //     无 grant（定时/webhook/子流程等无人值守）⇒ 唯一放行依据是工作流自己声明
+    //       `permissions.code: true`（`ctx.codeDeclared`，由 workflow-engine#run 透传）
+    //     两样都没有 ⇒ 默认拒绝（与本仓"显式放行才可出网"同姿态）
+    //
+    //   ★ 为什么默认拒绝而不是默认允许：code 节点的能力**严格大于** http 节点
+    //     （http 只能出网，code 能读 ctx.vars、能无限循环、能吃满 CPU）。
+    //     给它比 http 更松的默认值说不通。
+    if (ctx?.grant == null && ctx?.codeDeclared !== true) {
+      return {
+        output: '当前运行没有代码执行授权：code 节点会执行任意 JavaScript，需要本次运行的授权'
+          + '（定时 / webhook / 自动触发 / 子流程等无人值守入口不携带该授权；请在交互会话中运行该工作流，'
+          + '或在工作流里声明 permissions.code: true 后重试）（拒绝执行）',
+        isError: true,
+      }
+    }
     const code = node.code || ''
     const inputVars = {}
     for (const v of node.variables || []) {
@@ -352,9 +402,46 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   async function execHttp(node, ctx) {
     const url = renderTemplate(node.url || '', ctx.vars)
     if (!url) throw new Error('http 节点缺少 url')
+    // ★ E2 ①/Task 2：http 节点此前**完全不经**运行级授权（工具/审批门都绕过了它）⇒ «访问网络»
+    //   开关对它无效。这里按节点类型 'http' 过同一判据（唯一实现 = grantDecision，不另写一份）。
+    //   拒绝形状与 execTool 一致（{ output, isError } —— 权限拒绝是节点的确定性结果，不是把整
+    //   run 打成 failed 的硬错误）。
+    const d = grantDecision(ctx?.grant, 'http', { url }, ctx?.cwd)
+    if (d?.denied) return { output: d.message, isError: true }
+    // ★ 2026-09-27（遗留 B 修复，**此前的"边界登记"已成事实错误，同批订正**）：
+    //   原文案是「只覆盖手动运行：定时 / webhook / 子流程触发的 http 节点不带 grant ⇒ 这条判据
+    //   在那些路径上不生效」—— 那是**登记**，不是修好的行为。现在补上无 grant 时的判据：
+    //     无 grant ⇒ 网络**默认拒绝**；唯一放行依据 = 工作流声明 `permissions.network: true`
+    //     （`ctx.networkDeclared`，由 workflow-engine#run 从 wf.permissions 读取后透传）。
+    //   理由：那些入口没有对话框可问，"工作流里写死的声明"是唯一可得的用户意志；
+    //   拿不到就是拿不到 —— 默认最严（与本仓出网能力闸同姿态：显式放行才可出网）。
+    //   ⇒ 覆盖面从"仅手动运行"变为"**所有**触发路径"（语义变化已同批写进 EGRESS_BOUNDARY）。
+    if (ctx?.grant == null && ctx?.networkDeclared !== true) {
+      return {
+        output: '当前运行没有网络授权：http 节点需要本次运行的「访问网络」授权'
+          + '（定时 / webhook / 自动触发 / 子流程等无人值守入口不携带该授权；请在交互会话中运行该工作流，'
+          + '或在工作流里声明 permissions.network: true 后重试）（拒绝执行）',
+        isError: true,
+      }
+    }
+    // ★ AI-03：目标地址闸（与上面的 network 授权是**两道独立判据**）。在**真正发请求之前**判，
+    //   且拒绝形状与上面一致（{ output, isError }）—— 权限/策略拒绝是节点的确定性结果。
+    //   `renderTemplate` 之后才判：URL 里的变量（如 {{base}}）展开后才看得出真实目标。
+    const addrGate = await assertAllowedUrl(url, { channel: '工作流 http 节点' })
+    if (!addrGate.ok) return { output: addrGate.message, isError: true }
     const method = (node.method || 'GET').toUpperCase()
+    /** 逐条累积（下面按 k 写入 ⇒ 需要索引签名才能作为 fetch 的 HeadersInit）：
+     * @type {Record<string, string>} */
     const headers = {}
-    for (const [k, v] of Object.entries(renderTemplate(node.headers || '', ctx.vars) ? parseHeaderLines(node.headers) : {})) headers[k] = v
+    // ★ 两态归一 + 值渲染（2026-11-01）：
+    //   ① `headers` 写成 YAML 映射（`headers: {Authorization: Bearer x}`）时 node.headers 是**对象**，
+    //      原实现 `String(对象)` ⇒ "[object Object]" ⇒ 解析出 0 个头 ⇒ **认证头整体静默丢失**（401）；
+    //   ② 写成多行文本且含 `{{inputs.token}}` 时，原实现只把渲染结果用来判空，解析的仍是原文
+    //      ⇒ 发出去的是字面量 `{{…}}`。DSL 与 GUI 两侧都允许多行文本，执行侧必须两种都认。
+    const headerPairs = typeof node.headers === 'object' && node.headers !== null && !Array.isArray(node.headers)
+      ? Object.entries(node.headers).map(([k, v]) => [k, renderTemplate(String(v ?? ''), ctx.vars)])
+      : Object.entries(parseHeaderLines(renderTemplate(String(node.headers ?? ''), ctx.vars)))
+    for (const [k, v] of headerPairs) headers[k] = v
     let body
     if (node.body) {
       const bt = node.body.type || 'json'
@@ -371,14 +458,38 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     if (auth.type === 'bearer') headers['Authorization'] = `Bearer ${renderTemplate(String(auth.token || ''), ctx.vars)}`
     if (auth.type === 'api-key') headers[auth.header || 'X-API-Key'] = renderTemplate(String(auth.token || ''), ctx.vars)
     const timeout = (node.timeout || {}).read || node.timeout_ms || 60_000
-    const retry = node.retry?.enabled ? Math.max(0, Number(node.retry.max_retries || 1)) : 0
+    // ★ `?? 1` 而非 `|| 1`：显式写 `max_retries: 0`（= 不重试）不能被兜底成 1 次重试
+    const retry = node.retry?.enabled ? Math.max(0, Number(node.retry.max_retries ?? 1)) : 0
     let attempt = 0
     let lastErr
     while (attempt <= retry) {
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), timeout)
       try {
-        const res = await fetch(url, { method, headers, body, signal: ctrl.signal })
+        // ★ AI-03：`redirect: 'manual'` + 自己逐跳跟随。**不能**用 fetch 的默认自动跟随：
+        //   它内部的跳转对我们是不可见的，`assertAllowedUrl` 只能看到第一跳 —— 公网地址 302 到
+        //   `http://127.0.0.1:8080/` 就绕过了上面那道闸（fetchUrl 侧因递归天然逐跳复检，
+        //   这里必须显式做到同等强度）。跳转语义按 fetch 规范：303（以及 POST 时的 301/302）
+        //   改成 GET 并丢 body；307/308 保留方法与 body。
+        let hopUrl = url
+        let hopMethod = method
+        let hopBody = body
+        let res
+        for (let hop = 0; ; hop++) {
+          const gate = await assertAllowedUrl(hopUrl, { channel: '工作流 http 节点（重定向跳）' })
+          if (!gate.ok) return { output: gate.message, isError: true }
+          res = await fetch(hopUrl, { method: hopMethod, headers, body: hopBody, signal: ctrl.signal, redirect: 'manual' })
+          const loc = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null
+          if (!loc) break
+          if (hop >= 3) return { output: `重定向次数过多（>3），停在 ${res.status} → ${loc}`, isError: true }
+          let next
+          try { next = new URL(loc, hopUrl) } catch { return { output: `重定向目标无效：${loc}`, isError: true } }
+          if (res.status === 303 || ((res.status === 301 || res.status === 302) && hopMethod !== 'GET' && hopMethod !== 'HEAD')) {
+            hopMethod = 'GET'
+            hopBody = undefined
+          }
+          hopUrl = next.toString()
+        }
         const text = await res.text()
         let parsed = text
         try { parsed = JSON.parse(text) } catch { /* 非 JSON */ }
@@ -418,6 +529,11 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // 注意：grant 的存在即"唯一判据"——一旦 ctx.grant 提供，权限不再回落 permissionGate
   // （授权清单未列出的工具一律拒绝，不会因有审批门而被交互放行）。
   const WRITE_TOOLS = new Set(['Write', 'Edit'])
+  // 真出网工具（E2 ①/Task 2）：受「访问网络」开关约束。
+  // ★ 修复轮 R=1：名单不再在本文件写字面量 —— 唯一真源 `shared/egress-tools.mjs#EGRESS_WEB_TOOLS`
+  //   （与 kernel/approval-mode.mjs 的 net 类同源；渲染层 `src/lib/workflowModel.ts#NETWORK_TOOLS`
+  //   是它的手写镜像，由 src/lib/workflowModel.test.ts 的跨边界守卫锁住）。同一判据两份名单 = 漂移即开关失效。
+  const EGRESS_TOOLS = new Set(EGRESS_WEB_TOOLS)
   // 写入落点归一化（I1）：朴素前缀比较只看字面串，`<授权目录>/../evil.txt` 会被判为
   // "在授权目录之下"而放行（真实落点已越界）。这里 resolve 消解 `..`/相对段，再取
   // realpath（消解符号链接）；目标尚不存在时用最近存在祖先的 realpath 拼余段，
@@ -438,7 +554,7 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // 比较用归一化：统一 `/`、去尾斜杠、Windows 下不区分大小写
   const cmpPath = (p) => {
     const s = String(p).replace(/\\/g, '/').replace(/\/+$/, '')
-    return process.platform === 'win32' ? s.toLowerCase() : s
+    return CAPS.path.caseInsensitive ? s.toLowerCase() : s
   }
   // isInside：目标等于授权目录或在其次级之下（前缀比较必须按 **目录段** 边界，避免
   // `<dir>2` 误判为在 `<dir>` 之下）
@@ -455,8 +571,25 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     if (name === 'Bash' && matchesCatastrophic(String(input?.command ?? ''))) {
       return { denied: true, message: `${CATASTROPHIC_REASON}（工作流运行授权同样不放开灾难级命令）：${String(input?.command ?? '').slice(0, 80)}` }
     }
+    // ★ E2 ①/Task 2 修「假开关」：GUI 上有「访问网络」开关（src/components/workflows/AuthzDialog.tsx:196，
+    //   宿主 server/workflow-host.mjs#mergeCapabilities 把它逐字透传进 ctx.grant.network），但本函数
+    //   此前**只判 tools / write_dirs** ⇒ 用户勾掉网络后 http 节点照样发请求（开关是真的、判据是空的）。
+    //   `http` 是**节点类型**而非工具名：`deriveCapabilities` 只把 network 置 true、**不会**把 'http'
+    //   塞进 tools 清单（src/lib/workflowModel.ts:290-292）⇒ 这条判据必须排在 tools 清单判据**之前**，
+    //   否则 http 节点会先被"不在授权清单内"拦下，network 开关永远轮不到判（等于又一个空判据）。
+    //   出网**工具**名（WebFetch/WebSearch）刻意排在 tools 判据**之后**：既有"未授权工具"的拒绝文案
+    //   不变（kernel-tests/workflow-grant.test.mjs 有断言钉着），只在工具已授权、网络未授权时兜住。
+    if (name === 'http' && grant.network !== true) {
+      return { denied: true, message: `未授权访问网络（network）：http 节点需要本次运行的「访问网络」授权（拒绝执行）` }
+    }
     const tools = Array.isArray(grant.tools) ? grant.tools : []
-    if (!tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
+    // `http` 是**节点类型**，不是工具名：tools 清单里永远没有它（deriveCapabilities 只置 network），
+    // 故对它的授权形态就是上面那条 network 判据 —— 不再要求它在 tools 里（否则"已经授权网络"
+    // 的节点仍会被"不在授权清单内"拒掉，开关等于没用）。
+    if (name !== 'http' && !tools.includes(name)) return { denied: true, message: `工具 ${name} 不在本次运行的授权清单内（拒绝执行）` }
+    if (EGRESS_TOOLS.has(name) && grant.network !== true) {
+      return { denied: true, message: `未授权访问网络（network）：${name} 需要本次运行的「访问网络」授权（拒绝执行）` }
+    }
     if (WRITE_TOOLS.has(name)) {
       const rawDirs = Array.isArray(grant.write_dirs) ? grant.write_dirs.map((d) => String(d)) : []
       const p = input?.file_path
@@ -478,6 +611,28 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   async function checkToolPermission(ctx, name, input) {
     const g = grantDecision(ctx?.grant, name, input, ctx?.cwd)
     if (g) return g                                   // 有 grant：授权清单为唯一判据
+    // ★ 2026-09-27 修复（遗留 B）：**无运行级授权**时网络一律 fail-closed。
+    //   病根：`grant` 只在手动运行时经宿主下发（`server/workflow-host.mjs#mergeCapabilities`）；
+    //   定时 / webhook / 自动触发 / 子流程 / dyntools 这 5 条入口调 `engine.run` 时**不带 grant**
+    //   ⇒ `grantDecision` 首行 `if (!grant) return null` 直接失效 ⇒ `http` 节点与出网工具
+    //   **既不判 grant.network、也没有任何替代判据**（落到下面 `return { denied: false }`）——
+    //   用户勾掉「访问网络」后，换条触发路径就又出网了（开关只对手动运行有效）。
+    //   修法（**默认最严 + 显式放行**，与本仓出网能力闸同姿态）：
+    //     · 无 grant ⇒ 网络**默认拒绝**；
+    //     · 唯一放行依据 = 工作流自己声明 `permissions.network: true`（`ctx.networkDeclared`，
+    //       由 `workflow-engine#run` 从 `wf.permissions` 读取后透传）——这是无人值守形态下
+    //       唯一可得的"用户意志"（没有对话框可问）；语义与渲染层 `networkReasonOf` 的
+    //       `'declared'` 分支同源。
+    //   ★ 判据排在本行（gate 之前）：无人值守入口未必没有 `permissionGate`，若排在 gate 分支之后，
+    //     有 gate 的无人值守路径会去问一个无人应答的审批 ⇒ 静默挂起，而不是明确拒绝。
+    if ((name === 'http' || EGRESS_TOOLS.has(name)) && ctx?.networkDeclared !== true) {
+      return {
+        denied: true,
+        message: `当前运行没有网络授权：${name === 'http' ? 'http 节点' : `工具 ${name}`}需要本次运行的「访问网络」授权`
+          + '（无人值守入口：定时 / webhook / 自动触发 / 子流程不带该授权；请在交互会话中运行该工作流，'
+          + '或在工作流里声明 permissions.network: true 后重试）（拒绝执行）',
+      }
+    }
     const gate = ctx?.permissionGate
     if (typeof gate !== 'function') {
       if (name === 'Bash') return { denied: true, message: '当前工作流无审批通道：Bash 工具默认拒绝执行（请在交互会话中运行该工作流，由引擎审批门放行）' }
@@ -583,7 +738,17 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
     const wid = renderTemplate(String(node.workflow || ''), ctx.vars)
     const sub = {}
     for (const [k, v] of Object.entries(node.inputs || {})) sub[k] = typeof v === 'string' ? renderTemplate(v, ctx.vars) : v
-    const r = await engine.run({ id: wid, inputs: sub, depth: depth + 1 })
+    // ★ 2026-09-27（遗留 B）：**子流程必须继承父运行的网络授权**（此前这句没带任何授权 ⇒
+    //   子工作流 `ctx.grant` 为 undefined 且无声明 ⇒ 网络判据整条失效 = **子流程比父流程宽**）。
+    //   ★ 只继承"网络"这一维，**不**把父的 grant 整体下传：grant 一旦提供即"唯一判据"，
+    //   而父的 tools 清单由渲染层按**父**模型推导（`deriveCapabilities` 不走进 subworkflow 节点），
+    //   整体下传会把子工作流自己用到的工具判成"不在授权清单内"——那是拿修 A 的补丁弄坏 B。
+    //   工具/写入两维维持既有行为（登记在 progress.md）。
+    const parentNetAllowed = ctx?.grant ? ctx.grant.network === true : ctx?.networkDeclared === true
+    const r = await engine.run({
+      id: wid, inputs: sub, depth: depth + 1, cwd: ctx?.cwd ?? '',
+      networkDeclared: parentNetAllowed,
+    })
     if (!r.ok) throw new Error(`子工作流 ${wid} 失败: ${r.error}`)
     return { output: r.outputs ?? {} }
   }
@@ -674,6 +839,14 @@ export function createNodeExecutor({ registry = null, getModel = () => '', memor
   // 未注入 ctx.runBody 时（引擎/独立执行/测试均如此）注入本执行器的调度式子图实现。
   // 注意：runBody 经闭包引用本 const（不得引用模块级同名函数，否则工厂实例的子图
   // 会串到别的实例的 deps 上）。
+  /**
+   * 归一化包装：抛错自动转 `{ok:false, error}`。
+   * @param {any} node
+   * @param {any} ctx
+   * @returns {Promise<{ ok: boolean, output?: any, error?: any, dur_ms: number, [key: string]: any }>}
+   *   `output`/`error` 声明为**可选**：成功支带 `output`、失败支带 `error`，消费方用
+   *   `if (res.ok)` 收窄后再读 `res.output`（不声明可选时该读取会因为"另一支没有该键"报 TS2339）。
+   */
   const executeNode = async (node, ctx) => {
     const t0 = Date.now()
     const vars = normalizeScope(ctx)

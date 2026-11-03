@@ -16,7 +16,7 @@
 // **能力未被删死**：用户仍可在配置 `memory.markers.workflow` 里自定义放开——
 // 故最后一条用例专门验证"自定义 markers 依然生效"，防止把收窄做成阉割。
 //
-// 隔离：mkdtempSync + PONOS_HOME，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离：mkdtempSync + PONOS_HOME，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'

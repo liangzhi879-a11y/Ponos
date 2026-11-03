@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError } from '../kernel/api.mjs'
+import { detectProtocol, createAnthropicParser, protocolStream, streamMessages, toAbortSignal, classifyApiError, cacheMarkerEnabled, stripAccountingFields } from '../kernel/api.mjs'
 import { createToolRegistry } from '../kernel/tools.mjs'
 
 test('classifyApiError（P0-1）：错误码结构化分类 + 可重试标记', () => {
@@ -83,8 +83,8 @@ test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产
     ok: true,
     body: new ReadableStream({ start(c) { /* 永不 enqueue/close */ } }),
   })
-  const oldTimeout = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '50'
+  const oldTimeout = process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+  process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = '50'
   try {
     await assert.rejects(
       (async () => {
@@ -94,8 +94,8 @@ test('protocolStream（P1-6）：单次流读空闲看门狗——body 永不产
     )
   } finally {
     global.fetch = prev
-    if (oldTimeout === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = oldTimeout
+    if (oldTimeout === undefined) delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+    else process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = oldTimeout
   }
 })
 
@@ -118,8 +118,8 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
       },
     }),
   })
-  const old = process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-  process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = '80'
+  const old = process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+  process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = '80'
   try {
     const texts = []
     for await (const c of protocolStream({ url: 'http://t/v1/messages', body: {}, headers: {} })) {
@@ -128,15 +128,134 @@ test('protocolStream（C1）：慢 chunk 流不被空闲看门狗误杀——脉
     assert.equal(texts.join(''), 'abcd', '慢 chunk 流应完整读完（单次 read 在阈值内，看门狗不触发）')
   } finally {
     global.fetch = prev
-    if (old === undefined) delete process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS
-    else process.env.CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS = old
+    if (old === undefined) delete process.env.PONOS_STREAM_IDLE_TIMEOUT_MS
+    else process.env.PONOS_STREAM_IDLE_TIMEOUT_MS = old
+  }
+})
+
+// 【2026-09-18 P1-9】请求面剔除本地记账字段（usage / model）。
+// 病灶：engine 轮末 `setEntryUsage` 会给**已发出过**的 assistant 消息补 usage，使上一轮与
+// 本轮请求的公共前缀在最末一条 assistant 处断掉；且这些字段对模型无语义、白付每轮重传。
+// ⚠ 关键约束：必须在**序列化层**剔除，不能改 deriveMessages —— context 的估算缓存以消息
+// **对象身份**为 WeakMap 键（context.mjs 注释里明确列为"可证不陈旧"依据之一），无差别拷贝
+// 会击穿估算缓存。本测试同时锁住"无这两键的对象必须原引用返回"。
+test('stripAccountingFields（P1-9）：剔除 usage/model，且不含者保持同一引用（身份契约）', () => {
+  const plain = { role: 'user', content: 'hi' }
+  const withUsage = { role: 'assistant', content: 'ok', usage: { input_tokens: 5, cache_read_input_tokens: 3 }, model: 'm-1' }
+  const out = stripAccountingFields([plain, withUsage])
+  // ① 剔除生效，且原有语义字段完整保留
+  assert.equal('usage' in out[1], false, 'usage 不得进模型输入')
+  assert.equal('model' in out[1], false, 'model 不得进模型输入')
+  assert.equal(out[1].role, 'assistant')
+  assert.equal(out[1].content, 'ok')
+  // ② 身份契约：不含记账字段者必须**原引用**（否则击穿 context 估算 WeakMap 缓存）
+  assert.equal(out[0], plain, '无记账字段的消息必须原样返回同一对象引用')
+  assert.notEqual(out[1], withUsage, '带记账字段者做浅拷贝')
+  // ③ 不得就地修改原对象（transcript/派生缓存仍持有它，且 readonly --usage 依赖其 usage）
+  assert.ok(withUsage.usage && withUsage.model, '原对象不得被就地改写（存储侧照旧保留）')
+})
+
+test('stripAccountingFields（P1-9）：请求体端到端不含 usage/model（含 system 抽离路径）', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push(JSON.parse(String(init.body)))
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.anthropic.com', PONOS_AUTH_TOKEN: 'k' })
+  try {
+    const messages = [
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1', usage: { input_tokens: 9 }, model: 'm' },
+      { role: 'user', content: 'q2' },
+    ]
+    for await (const _ of streamMessages({ model: 'm', messages, maxTokens: 64 })) { /* drain */ }
+    assert.equal(captured.length, 1)
+    const sent = captured[0].messages
+    assert.equal(sent.length, 3, 'system 仍抽离为顶层参数')
+    for (const m of sent) {
+      assert.equal('usage' in m, false, `请求体不得含 usage：${JSON.stringify(m).slice(0, 80)}`)
+      assert.equal('model' in m, false, '请求体不得含 model')
+    }
+    // 原数组未被就地改写（transcript 侧数据保留）
+    assert.ok(messages[2].usage && messages[2].model)
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
   }
 })
 
 test('detectProtocol：Anthropic env 存在 → anthropic，否则 null', () => {
-  assert.equal(detectProtocol({ ANTHROPIC_BASE_URL: 'http://y' }), 'anthropic')
+  assert.equal(detectProtocol({ PONOS_BASE_URL: 'http://y' }), 'anthropic')
   assert.equal(detectProtocol({}), null)
   assert.equal(detectProtocol({ OPENAI_BASE_URL: 'http://x' }), null)
+})
+
+// 【2026-09-18 P0-2】缓存标记按端点能力判定：Anthropic 官方不打标记 = 0 命中（必须自动开），
+// DeepSeek 忽略该字段（开了无用、还可能撞 400 触发去标记重发）。显式 env 必须仍能覆盖，
+// 否则既有手工契约与排障手段消失。
+test('cacheMarkerEnabled（P0-2）：显式 env 覆盖优先，未设时按端点能力判定', () => {
+  // ① 显式优先：无论端点是什么，env 说了算（保留既有契约）
+  assert.equal(cacheMarkerEnabled('https://api.deepseek.com', { PONOS_PROMPT_CACHE: '1' }), true)
+  assert.equal(cacheMarkerEnabled('https://api.anthropic.com', { PONOS_PROMPT_CACHE: '0' }), false)
+  // ② 未设：必须显式标记的端点自动开（否则缓存收益归零）
+  assert.equal(cacheMarkerEnabled('https://api.anthropic.com', {}), true)
+  assert.equal(cacheMarkerEnabled('https://bedrock-runtime.us-east-1.amazonaws.com', {}), true)
+  assert.equal(cacheMarkerEnabled('https://us-central1-aiplatform.googleapis.com', {}), true)
+  // ③ 未设：DeepSeek / 本地 / 未知网关保持关闭 = 原有默认行为不变（零回归）
+  assert.equal(cacheMarkerEnabled('https://api.deepseek.com', {}), false)
+  assert.equal(cacheMarkerEnabled('http://127.0.0.1:8000', {}), false)
+  assert.equal(cacheMarkerEnabled('https://gw.internal.example.com', {}), false)
+})
+
+// 端到端接线：纯函数判定必须真的作用到请求体，防止"判定写了但没接上"（本仓库
+// docs/2026-09-15-五引擎架构性能对比分析.md 记录过同类死逻辑 PROMPT_CACHE_BREAK_DETECTION）。
+test('cacheMarkerEnabled（P0-2）：Anthropic 端点未设 env 时请求体自动带 cache_control', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push({ body: JSON.parse(String(init.body)) })
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.anthropic.com', PONOS_AUTH_TOKEN: 'k' })
+  delete process.env.PONOS_PROMPT_CACHE
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(captured.length, 1)
+    const sys = captured[0].body.system
+    assert.ok(Array.isArray(sys), 'Anthropic 端点应自动转数组形态并打标记')
+    assert.deepEqual(sys[0].cache_control, { type: 'ephemeral' })
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
+  }
+})
+
+test('cacheMarkerEnabled（P0-2）：DeepSeek 端点未设 env 时不打标记（system 保持字符串）', async () => {
+  const captured = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => {
+    captured.push({ body: JSON.parse(String(init.body)) })
+    return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
+  }
+  const oldEnv = { ...process.env }
+  Object.assign(process.env, { PONOS_BASE_URL: 'https://api.deepseek.com', PONOS_AUTH_TOKEN: 'k' })
+  delete process.env.PONOS_PROMPT_CACHE
+  try {
+    const chunks = []
+    for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
+    assert.equal(captured[0].body.system, 'SYS', 'DeepSeek 忽略该字段，不发无谓标记（避免 400 重发）')
+  } finally {
+    global.fetch = prev
+    for (const k of Object.keys(process.env)) if (!(k in oldEnv)) delete process.env[k]
+    Object.assign(process.env, oldEnv)
+  }
 })
 
 test('Anthropic 解析器：text/tool_use/usage 归一化 chunk 形状', () => {
@@ -159,6 +278,58 @@ test('Anthropic 解析器：text/tool_use/usage 归一化 chunk 形状', () => {
   assert.equal(usage.output_tokens, 3)
   assert.equal(usage.cache_read_input_tokens, 2)
   assert.equal(usage.cache_creation_input_tokens, 1)
+})
+
+// 【2026-09-18 P0-1】缓存字段别名：端点回传 DeepSeek **原生**名字时也必须读到命中数。
+// 此前只认 Anthropic 形态，端点若回传原生名字 ⇒ 命中读成 0 且全程静默（观测/成本/预算
+// 同时失真）。两家口径不同：Anthropic 的 input 不含命中；DeepSeek 的 prompt_tokens 含命中
+// ——必须按来源归一，否则命中部分被按全价重复计一次。
+test('usage 归一化（P0-1）：DeepSeek 原生 prompt_cache_hit_tokens → cache_read，input 扣掉命中部分', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { prompt_tokens: 100, completion_tokens: 7, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 20 },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.cache_read_input_tokens, 80, '命中数必须从原生字段读到')
+  assert.equal(u.input_tokens, 20, 'prompt_tokens 含命中部分，须扣减以免重叠计费')
+  assert.equal(u.output_tokens, 7, 'completion_tokens 别名')
+})
+
+test('usage 归一化（P0-1）：Anthropic 形态 input 不含命中 → 不扣减（回归保护）', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { input_tokens: 100, output_tokens: 7, cache_read_input_tokens: 80 },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.input_tokens, 100, 'Anthropic 语义下 input 已不含命中，扣减会少算')
+  assert.equal(u.cache_read_input_tokens, 80)
+})
+
+test('usage 归一化（P0-1）：无缓存字段时两个口径都退化为原值', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({ type: 'message_delta', usage: { prompt_tokens: 100, completion_tokens: 7 } })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.input_tokens, 100)
+  assert.equal(u.cache_read_input_tokens, 0)
+})
+
+// OpenAI 形态：prompt_tokens + prompt_tokens_details.cached_tokens（Responses API 走
+// input_tokens_details.cached_tokens）。命中数同样是 prompt_tokens 的**子集**，须扣减。
+test('usage 归一化（P0-1）：OpenAI 形态 cached_tokens → cache_read，input 扣掉命中部分', () => {
+  const p = createAnthropicParser()
+  const out = p.feed({
+    type: 'message_delta',
+    usage: { prompt_tokens: 100_000, completion_tokens: 7, prompt_tokens_details: { cached_tokens: 90_000 } },
+  })
+  const u = out.find((c) => c.type === 'usage').usage
+  assert.equal(u.cache_read_input_tokens, 90_000, 'OpenAI 形态别名必须读到（否则观测层判"端点无缓存"而整体静默）')
+  assert.equal(u.input_tokens, 10_000, 'cached_tokens 是 prompt_tokens 的子集，须扣减')
+  const p2 = createAnthropicParser()
+  const out2 = p2.feed({ type: 'message_delta', usage: { prompt_tokens: 100, input_tokens_details: { cached_tokens: 80 } } })
+  const u2 = out2.find((c) => c.type === 'usage').usage
+  assert.equal(u2.cache_read_input_tokens, 80, 'Responses API 形态别名')
 })
 
 // 【2026-09-12 流式观感 + 丢字回归】原实现只在 "\n\n" 处产出文本 chunk（整段被扣到
@@ -278,6 +449,50 @@ test('Anthropic 解析器：思考尾巴由 finish() 收口（新增缓冲不得
   assert.equal(seen.filter((c) => c.type === 'thinking').map((c) => c.text).join(''), '短思考')
 })
 
+// 【2026-09-23 流式序】segmentText 会把"不足阈值且无段落界"的尾巴留在缓冲里，旧实现
+// **只在 finish()（流末）**吐净。而 tool_use 在 content_block_stop 就上 wire ⇒ 一条
+// **短正文**（工具调用前的引导语正是这种：十几个字、无空行）整段被押到流末、跑到工具
+// 卡片**之后**。实时视图于是显示"卡片 → 正文"，与磁盘落盘序（思考 → 正文 → 工具）相反，
+// 用户实测反馈为"正文被过快出现的卡片打断"。块边界就是该块内容的终点 ⇒ 此时吐净。
+test('Anthropic 解析器：块收尾须吐净余量——短正文/思考不得跑到工具卡片之后（实时序=磁盘序）', () => {
+  const p = createAnthropicParser()
+  const out = []
+  // 一个真实迭代形态：短思考 → 短引导文字（都 < 阈值 16、无空行）→ 一个工具调用
+  out.push(...p.feed({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }))
+  out.push(...p.feed(TH('我先看看这个文件。')))
+  out.push(...p.feed({ type: 'content_block_stop', index: 0 }))
+  out.push(...p.feed({ type: 'content_block_start', index: 1, content_block: { type: 'text' } }))
+  out.push(...p.feed(TD('先摸清流式建块代码：')))
+  out.push(...p.feed({ type: 'content_block_stop', index: 1 }))
+  out.push(...p.feed({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 't1', name: 'Read', input: {} } }))
+  out.push(...p.feed({ type: 'content_block_stop', index: 2 }))
+  assert.deepEqual(
+    out.filter((c) => c.type !== 'usage').map((c) => c.type),
+    // thinking_block（2026-10-22 思考回放）是实时尾巴的**完整块副本**，紧跟其上屏帧之后；
+    // 它不进 wire，只供落盘/回放。位置钉死 = 迟到会串到正文/工具之后。
+    ['thinking', 'thinking_block', 'text', 'tool_use'],
+    '顺序必须是 思考（帧→完整块）→ 正文 → 工具（= 磁盘落盘序）；旧实现为 tool_use, thinking, text',
+  )
+  // 吐净不得引入丢字（余量释放而非丢弃）
+  assert.equal(out.filter((c) => c.type === 'text').map((c) => c.text).join(''), '先摸清流式建块代码：')
+  assert.equal(out.filter((c) => c.type === 'thinking').map((c) => c.text).join(''), '我先看看这个文件。')
+})
+
+test('Anthropic 解析器：端点不发 content_block_stop 时，下一块 start 也须吐净余量（兼容形态）', () => {
+  const p = createAnthropicParser()
+  const out = []
+  out.push(...p.feed(TH('短思考')))
+  // 不发 thinking 块的 stop，直接开 text 块（兼容端点可能省略）
+  out.push(...p.feed({ type: 'content_block_start', index: 1, content_block: { type: 'text' } }))
+  out.push(...p.feed(TD('短正文')))
+  out.push(...p.feed({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 't1', name: 'Read', input: {} } }))
+  out.push(...p.feed({ type: 'content_block_stop', index: 2 }))
+  assert.deepEqual(
+    out.filter((c) => c.type !== 'usage').map((c) => c.type),
+    ['thinking', 'thinking_block', 'text', 'tool_use'],
+  )
+})
+
 test('protocolStream：Anthropic 完整事件序列（content_block_start→delta→stop→message_delta）仅产出一个 usage chunk', async () => {
   const events = [
     JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 1 } } }),
@@ -312,7 +527,7 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
     captured.push({ url: String(url), body: JSON.parse(String(init.body)) })
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
-  const env = { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', ANTHROPIC_MODEL: 'm' }
+  const env = { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_MODEL: 'm' }
   const oldEnv = { ...process.env }
   Object.assign(process.env, env)
   try {
@@ -322,7 +537,11 @@ test('tools 注入：Anthropic 请求 body 含 tools[]（字段名映射，mock 
     assert.equal(captured.length, 1)
     assert.ok(captured[0].url.endsWith('/v1/messages'))
     assert.ok(Array.isArray(captured[0].body.tools))
-    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'MemorySearch', 'KnowledgeSearch', 'KnowledgeImport', 'KnowledgeDelete', 'SkillSearch', 'Workflow', 'Browser'])
+    // 精确清单 26 项 = 25 + ToolSearch（2026-10-26 工具按需加载的检索入口；**首位**插入，
+    // 因为 registry 里 ToolSearch 排在 Bash 之前 —— 这是注册表真实顺序，非放宽）。
+    // ★ 原清单 23 项自 2026-10-21 ProjectAtlas 注册后即已过期（本文件当时漏改 ⇒ 既有红）；
+    //   本次按注册表真实顺序补齐：ProjectAtlas 在 Grep 之后，Vault 在 Screen 之后。
+    assert.deepEqual(captured[0].body.tools.map((t) => t.name), ['ToolSearch', 'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'ProjectAtlas', 'Agent', 'Task', 'TodoWrite', 'WebFetch', 'WebSearch', 'OCR', 'Vision', 'Skill', 'SkillDraft', 'MemorySearch', 'KnowledgeSearch', 'KnowledgeImport', 'KnowledgeDelete', 'SkillSearch', 'Workflow', 'Browser', 'Screen', 'Vault'])
     assert.equal(captured[0].body.tools[0].input_schema.type, 'object')
     assert.ok(chunks.some((c) => c.type === 'usage'))
   } finally {
@@ -390,7 +609,7 @@ test('prompt cache：PONOS_PROMPT_CACHE=1 时 system 打 ephemeral 缓存标记�
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -421,7 +640,7 @@ test('prompt cache：端点拒绝缓存标记时自动去掉重发（兼容回�
     return { ok: true, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"type":"message_delta","usage":{"input_tokens":1,"output_tokens":1}}\n\ndata: [DONE]\n\n')); c.close() } }) }
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_PROMPT_CACHE: '1' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -460,7 +679,7 @@ test('R1-1 流中断：第一次流中途抛 transient → 自动重发成功（
     return new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(ok)); c.close() } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
   }
   const oldEnv = { ...process.env }
-  Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://t', ANTHROPIC_AUTH_TOKEN: 'k', PONOS_MOCK_API: '' })
+  Object.assign(process.env, { PONOS_BASE_URL: 'http://t', PONOS_AUTH_TOKEN: 'k', PONOS_MOCK_API: '' })
   try {
     const chunks = []
     for await (const c of streamMessages({ model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) chunks.push(c)
@@ -503,11 +722,11 @@ test('R1-2 fetch 连接超时：首次 fetch 抛 TimeoutError → 经重发链�
   }
   const oldEnv = { ...process.env }
   Object.assign(process.env, {
-    ANTHROPIC_BASE_URL: 'http://t',
-    ANTHROPIC_AUTH_TOKEN: 'k',
+    PONOS_BASE_URL: 'http://t',
+    PONOS_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
-    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
-    CLAUDE_CODE_STREAM_RECONNECTS: '2',
+    PONOS_CONNECT_TIMEOUT_MS: '150',   // 测试缩短
+    PONOS_STREAM_RECONNECTS: '2',
   })
   try {
     const chunks = []
@@ -543,11 +762,11 @@ test('R1-2 连接超时只作用于首字节：fetch 快速 resolve 后长流不
   }
   const oldEnv = { ...process.env }
   Object.assign(process.env, {
-    ANTHROPIC_BASE_URL: 'http://t',
-    ANTHROPIC_AUTH_TOKEN: 'k',
+    PONOS_BASE_URL: 'http://t',
+    PONOS_AUTH_TOKEN: 'k',
     PONOS_MOCK_API: '',
-    CLAUDE_CODE_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
-    CLAUDE_CODE_STREAM_IDLE_TIMEOUT_MS: '5000',
+    PONOS_CONNECT_TIMEOUT_MS: '100',  // 100ms 连接超时，远小于流总时长 200ms
+    PONOS_STREAM_IDLE_TIMEOUT_MS: '5000',
   })
   try {
     const texts = []
@@ -581,10 +800,10 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
   }
   const oldEnv = { ...process.env }
   try {
-    process.env.ANTHROPIC_BASE_URL = 'http://orig'
-    process.env.ANTHROPIC_AUTH_TOKEN = 'k'
+    process.env.PONOS_BASE_URL = 'http://orig'
+    process.env.PONOS_AUTH_TOKEN = 'k'
     process.env.PONOS_MOCK_API = ''
-    process.env.CLAUDE_CODE_CONNECT_TIMEOUT_MS = '150'
+    process.env.PONOS_CONNECT_TIMEOUT_MS = '150'
     const { setProvider } = await import('../kernel/provider.mjs')
     setProvider({ baseUrl: 'http://hot-switched', authToken: 'k2', model: 'm2' })
     for await (const c of streamMessages({ model: 'm2', messages: [{ role: 'user', content: 'hi' }], maxTokens: 100 })) {}
@@ -594,4 +813,35 @@ test('P4-5 setProvider 激活后 streamMessages 请求走新 baseUrl（mock fetc
     globalThis.fetch = origFetch
     process.env = oldEnv
   }
+})
+
+test('★★★ 413 必须一律归 context-window（不得 transient ⇒ 否则同一超大请求无限重试）', () => {
+  // 实测事故（2026-09-29）：某会话 2500+ 消息、请求体 ~1.7MB；网关回 413 且文案为
+  //   nginx 风格 "Request Entity Too Large"（不含 maximum context length / prompt is too long
+  //   等关键词）⇒ **旧实现判 transient（保守可重试）** ⇒ 反复重发**同一个超大 payload**
+  //   ⇒ 实测 **61 轮 compact+api 死循环**（每轮 1.7MB，且消息数还在增长）。
+  //   更关键的连带损失：内核**本已具备**的 context-window 自愈（压缩腾空间 / 采纳端点真实窗口 /
+  //   收窄输出预算）**只在 kind==='context-window' 时进入** ⇒ 那些防御**完全没被触发**。
+  //   ⇒ 413 的语义无歧义（负载超过服务端接受上限），重试同 payload 永不成功 ⇒ 必须归 context-window。
+  const mk = (message, status = 413) => { const e = new Error(message); e.status = status; return e }
+
+  // ① 无任何上下文关键词（**真实现场**）—— 这条就是本 bug 的核心
+  const real = mk('Request Entity Too Large')
+  assert.equal(classifyApiError(real).kind, 'context-window',
+    '413 无关键词也必须走 context-window 自愈（否则死循环）')
+  assert.equal(classifyApiError(real).retryable, false, '413 不可重试：重发同 payload 永不成功')
+
+  // ② 空消息（部分网关只回状态码）
+  assert.equal(classifyApiError(mk('')).kind, 'context-window')
+
+  // ③ 带上下文关键词（原有路径，保持不回归）
+  assert.equal(classifyApiError(mk('maximum context length exceeded')).kind, 'context-window')
+  assert.equal(classifyApiError(mk('prompt is too long')).kind, 'context-window')
+
+  // ★★ 反向：**非 413** 的网关瞬时错误仍须 transient ——
+  //   防"为了修 413 而把 5xx 也吞进 context-window"（那会让网关抖动也去做 480-600s 的摘要，
+  //   代价极大且无必要）。
+  assert.equal(classifyApiError(mk('Bad Gateway', 502)).kind, 'transient')
+  assert.equal(classifyApiError(mk('Service Unavailable', 503)).kind, 'transient')
+  assert.equal(classifyApiError(mk('Bad Gateway', 502)).retryable, true)
 })

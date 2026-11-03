@@ -31,7 +31,7 @@
  * 静默跳过（静默跳过比不做更糟：读者会以为已经做了）。
  */
 
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 /** 临时文件前缀：点号开头（遍历可跳过）+ 固定标识（人工排查时一眼认出是残留） */
@@ -43,19 +43,95 @@ function randTag() {
 }
 
 /**
+ * **瞬时** rename 失败的错误码（2026-10-18，由 loop-e2e 间歇假红追出的真实缺陷）。
+ *
+ * 为什么需要它：Windows 上 `renameSync` 覆盖一个**正被读句柄打开**的目标文件会偶发 `EPERM`。
+ * 实测（写者 3000 次 rename、读者每 25ms `readFileSync` 同一文件）：**50 次 EPERM ≈ 1.7%**。
+ *
+ * 为什么这值钱：`kernel/loop.mjs#persist()` 正是 tmp+rename，而**桥主管与 GUI 都在轮询**
+ * 循环状态文件（`aliveAt` 心跳就靠它）。persist 失败只 warning 一次然后静默 ⇒
+ * 磁盘长期停留在旧状态 ⇒ 循环的 `nextRunAt` 永远是 0 ⇒ **内核被回收后主管无法唤醒**，
+ * 断点续跑能力**静默失效**。这类失败不会报错、不会崩，只是"功能时有时无"——最难查的一类。
+ *
+ * 只重试**瞬时**错误：`ENOENT`（目标目录没了）、`EXDEV`（跨盘）、`ENOSPC`（磁盘满）
+ * 重试多少次都不会成功，立即抛给调用方才是对的。
+ */
+export const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'EMFILE', 'ENFILE'])
+
+/** 同步睡眠（Node 主线程可用；仅用于重试退避的毫秒级等待） */
+function sleepSyncMs(ms) {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n <= 0) return
+  try {
+    // Atomics.wait 在主线程可用（浏览器不允许，Node 允许），且不烧 CPU
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, n)
+  } catch {
+    // 极端环境不支持就退化为忙等一小会儿（远好于"没有退避"）
+    const t0 = Date.now()
+    while (Date.now() - t0 < n) { /* spin */ }
+  }
+}
+
+/**
+ * 带**瞬时错误重试**的 `renameSync`。
+ *
+ * @param {string} from 临时文件（同目录、同文件系统）
+ * @param {string} to 目标文件
+ * @param {object} [o]
+ * @param {number} [o.attempts] 最多尝试次数（默认 8）
+ * @param {number} [o.baseDelayMs] 首次退避毫秒（默认 15；之后线性递增，封顶 200）
+ * @param {(from:string,to:string)=>void} [o.renameImpl] 测试注入
+ * @param {(ms:number)=>void} [o.sleepImpl] 测试注入
+ * @returns {void}
+ */
+export function renameWithRetrySync(from, to, o = {}) {
+  const attempts = Number.isFinite(Number(o.attempts)) && Number(o.attempts) > 0
+    ? Math.floor(Number(o.attempts))
+    : 8
+  const baseDelayMs = Number.isFinite(Number(o.baseDelayMs)) && Number(o.baseDelayMs) >= 0
+    ? Number(o.baseDelayMs)
+    : 15
+  const renameImpl = o.renameImpl || renameSync
+  const sleepImpl = o.sleepImpl || sleepSyncMs
+
+  let lastErr = null
+  for (let i = 0; i < attempts; i++) {
+    try {
+      renameImpl(from, to)
+      return
+    } catch (e) {
+      lastErr = e
+      // 确定性错误（ENOENT/EXDEV/ENOSPC…）：重试只会拖慢失败，立即抛
+      if (!RENAME_RETRY_CODES.has(String(e && e.code || ''))) throw e
+      if (i === attempts - 1) break
+      // 退避递增（封顶 200ms）：避免高频硬撞同一个锁
+      sleepImpl(Math.min(baseDelayMs * (i + 1), 200))
+    }
+  }
+  throw lastErr || new Error('rename failed')
+}
+
+/**
  * 原子写入文本。成功返回写入字节数（便于调用方核对）；失败**抛错**且保证目标文件未被改动。
  *
  * 失败时抛错而不是"回退成普通写入"：普通写入正是本函数要消灭的东西，
  * 回退等于"看着安全、真出事时半截文件"——比直接失败更危险。
+ *
+ * @param {string} absPath 目标文件
+ * @param {string|Buffer} content
+ * @param {object} [opts]
+ * @param {number} [opts.mode] 文件权限（如密码库要求 `0o600`）。POSIX 生效；Windows 忽略。
+ *   ★ 2026-10-18 新增：`electron/vault.cjs` 用它保证密码库文件 0600，没有这个参数就没法迁移过来。
  */
-export function writeFileAtomicSync(absPath, content) {
+export function writeFileAtomicSync(absPath, content, opts = {}) {
   const dir = dirname(absPath)
   mkdirSync(dir, { recursive: true })
+  const mode = Number.isInteger(opts.mode) ? opts.mode : undefined
   const tmp = join(dir, `${TMP_PREFIX}${process.pid}-${randTag()}-${basename(absPath)}`)
   const buf = Buffer.isBuffer(content) ? content : Buffer.from(String(content ?? ''), 'utf-8')
   let fd = null
   try {
-    fd = openSync(tmp, 'w')
+    fd = mode === undefined ? openSync(tmp, 'w') : openSync(tmp, 'w', mode)
     if (buf.length) writeSync(fd, buf, 0, buf.length, 0)
     fsyncSync(fd)      // 见文件头第 2 点：必须在 rename 之前
     closeSync(fd)
@@ -67,10 +143,17 @@ export function writeFileAtomicSync(absPath, content) {
   }
   try {
     // 同一文件系统内的目录项替换 = 原子（要么旧要么新，不存在半截）
-    renameSync(tmp, absPath)
+    // ★ 2026-10-18：改用 renameWithRetrySync —— Windows 上目标文件正被读句柄打开时
+    //   rename 会偶发 EPERM（实测 1.7%），本文件被知识库写入/配置保存等多处使用，
+    //   静默失败会让"保存成功"变成"其实没写进去"。详见 RENAME_RETRY_CODES 的注释。
+    renameWithRetrySync(tmp, absPath)
   } catch (e) {
     try { rmSync(tmp, { force: true }) } catch { /* 同上 */ }
     throw e
+  }
+  // ★ POSIX：rename 不继承 tmp 的 mode（新文件按 umask 建），显式再设一次以保证密码库 0600
+  if (mode !== undefined) {
+    try { chmodSync(absPath, mode) } catch { /* Windows 上多为 no-op；失败不影响机密性 */ }
   }
   return buf.length
 }

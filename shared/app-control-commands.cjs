@@ -109,6 +109,9 @@ const CONTROL_COMMANDS = {
     { id: 'focus', area: 'interact', driver: 'uia', act: 'focus', implemented: true },
     { id: 'type', area: 'interact', driver: 'uia', act: 'type', implemented: true },
     { id: 'tree', area: 'read', driver: 'uia', act: 'tree', implemented: true },
+    // P2d: UIA 原生按名/automationId 检索（只读）。payload 比整棵树小得多（实测 265 B vs 3522 B），
+    // 且把匹配交给 UIA 自己做。
+    { id: 'find', area: 'read', driver: 'uia', act: 'find', implemented: true },
     { id: 'key', area: 'interact', driver: 'uia', act: 'key', implemented: true },
     { id: 'wait', area: 'wait', driver: 'uia', act: 'wait', implemented: true },
   ],

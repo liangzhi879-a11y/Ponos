@@ -11,7 +11,7 @@
 //   ④ **ref 边不因内容改动失效**：引用是**手写意图**，"这条经验引用了那篇文档"不因
 //      目标内容被编辑而消失；故 `validateRelation` 的 ref 分支只要求两端存在，**不比指纹**。
 //
-// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.yfworking / ~/.yfw。
+// 隔离纪律：全部走 mkdtempSync 临时 configDir，绝不碰真实 ~/.ponos / ~/.ponos。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'

@@ -7,11 +7,11 @@
 // 命令级用例（直接调 runKnowledgeCommand）**绕不过这一层**，只有真进程能钉住。
 // （同一纪律的历史用例：knowledge-related-cli.test.mjs 的 `--doc`/`--related` 真进程段。）
 //
-// pytest 依赖处理：转换器由**假解析器**承担（`YFW_DOC_TO_MD` 指向一段打印单行 JSON 的
+// pytest 依赖处理：转换器由**假解析器**承担（`PONOS_DOC_TO_MD` 指向一段打印单行 JSON 的
 // python 脚本），故用例不依赖真实 pd 解析库、不加载 OCR 模型。没有可用 python 解释器的
 // 环境里，只有"需要落盘产物"的用例 skip（flag 校验/护栏/零落盘那批不依赖 python）。
 //
-// 隔离：mkdtemp + PONOS_HOME（并清掉 CLAUDE_CONFIG_DIR，防宿主把 configDir 指到真实库）；
+// 隔离：mkdtemp + PONOS_HOME（并清掉 PONOS_CONFIG_DIR，防宿主把 configDir 指到真实库）；
 // 不起 bridge、不联网。真实 `knowledge/` 一律不碰。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -73,7 +73,7 @@ function pyOk() {
 
 function envFor(home, extra = {}) {
   const env = { ...process.env, PONOS_HOME: home, ...extra }
-  delete env.CLAUDE_CONFIG_DIR   // 否则优先级高于 PONOS_HOME，用例会写进真实 configDir
+  delete env.PONOS_CONFIG_DIR   // 否则优先级高于 PONOS_HOME，用例会写进真实 configDir
   return env
 }
 /** 真进程跑 `--knowledge <args…>`（格式旗标必须带：`--knowledge` 短路在格式校验之后） */
@@ -107,7 +107,7 @@ test('真进程 import --dry-run：报告含 dryRun 回显与三档清单，且*
   const src = mkSrc({ 'a.txt': 'A', 'sub/b.txt': 'B', 'evil.exe': 'MZ' })
   try {
     const before = snap(home)
-    const r = runCli(home, ['import', '--src', src, '--name', '预演空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const r = runCli(home, ['import', '--src', src, '--name', '预演空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.equal(r.json.ok, true)
     // dryRun 回显是"转发真的到了模块"的证据之一（漏转发时模块拿到 undefined → false）
@@ -131,7 +131,7 @@ test('真进程 import：md/台账/.space.json 落盘；二次导入全跳过；
   const home = mkHome('real')
   const src = mkSrc({ 'a.txt': 'A', 'sub/b.txt': 'B' })
   try {
-    const r = runCli(home, ['import', '--src', src, '--name', '空间甲'], { YFW_DOC_TO_MD: fakeParser() })
+    const r = runCli(home, ['import', '--src', src, '--name', '空间甲'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.deepEqual(r.json.counts, { total: 2, converted: 2, skipped: 0, failed: 0 })
     const root = spaceRootOf(home, '空间甲')
@@ -144,7 +144,7 @@ test('真进程 import：md/台账/.space.json 落盘；二次导入全跳过；
 
     // 二次导入：全跳过（幂等）
     const mtime = statSync(join(root, 'a.md')).mtimeMs
-    const r2 = runCli(home, ['import', '--src', src, '--name', '空间甲'], { YFW_DOC_TO_MD: fakeParser() })
+    const r2 = runCli(home, ['import', '--src', src, '--name', '空间甲'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r2.code, 0)
     assert.deepEqual(r2.json.counts, { total: 2, converted: 0, skipped: 2, failed: 0 })
     assert.equal(statSync(join(root, 'a.md')).mtimeMs, mtime, '跳过时不得重写产物')
@@ -163,7 +163,7 @@ test('--src 可重复：多源回显数组且两源都落盘；单源保持字�
   const s1 = mkSrc({ 'a.txt': 'A' })
   const s2 = mkSrc({ 'c.txt': 'C' })
   try {
-    const r = runCli(home, ['import', '--src', s1, '--src', s2, '--name', '空间乙'], { YFW_DOC_TO_MD: fakeParser() })
+    const r = runCli(home, ['import', '--src', s1, '--src', s2, '--name', '空间乙'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.ok(Array.isArray(r.json.source), '多源必须是数组（否则调用方看不出这批来自哪几个地方）')
     assert.equal(r.json.source.length, 2)
@@ -182,14 +182,14 @@ test('--name 与 --space 二选一都能定空间；两者皆缺 → bad-space-i
   const home = mkHome('name')
   const src = mkSrc({ 'a.txt': 'A' })
   try {
-    const byName = runCli(home, ['import', '--src', src, '--name', '只用名称', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const byName = runCli(home, ['import', '--src', src, '--name', '只用名称', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(byName.code, 0, `stderr=${byName.stderr}`)
     assert.equal(byName.json.spaceId, '只用名称')
-    const bySpace = runCli(home, ['import', '--src', src, '--space', '空间丙', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const bySpace = runCli(home, ['import', '--src', src, '--space', '空间丙', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(bySpace.code, 0)
     assert.equal(bySpace.json.spaceId, '空间丙')
     assert.equal(bySpace.json.spaceName, '空间丙', '缺 name 时显示名回落 space id')
-    const neither = runCli(home, ['import', '--src', src, '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const neither = runCli(home, ['import', '--src', src, '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(neither.code, 1)
     assert.equal(neither.json.error, 'bad-space-id')
   } finally { rmSync(home, { recursive: true, force: true }); rmSync(src, { recursive: true, force: true }) }
@@ -200,7 +200,7 @@ test('缺 --src → missing-from；--max-ocr-pages 非法值 → 明确报错（
   const home = mkHome('argerr')
   const src = mkSrc({ 'a.txt': 'A' })
   try {
-    const noSrc = runCli(home, ['import', '--name', '空间丁', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const noSrc = runCli(home, ['import', '--name', '空间丁', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(noSrc.code, 1)
     assert.equal(noSrc.json.error, 'missing-from')
     // stderr 补充通道（HTTP 侧 kernelReadonly 非零退出会丢弃 stdout，声明"为什么被拒"只能靠它）
@@ -209,13 +209,13 @@ test('缺 --src → missing-from；--max-ocr-pages 非法值 → 明确报错（
     // 非法值**必须报错**：静默回落默认 200 会让"我限了 5 页"变成跑了 40 倍 OCR 工作量。
     // 该断言同时是"flag 真的穿过 parseArgs → 转发 → op"的证据：任一层漏了，这里都会 code=0。
     for (const bad of ['abc', '0', '-3']) {
-      const r = runCli(home, ['import', '--src', src, '--name', '空间丁', '--dry-run', '--max-ocr-pages', bad], { YFW_DOC_TO_MD: fakeParser() })
+      const r = runCli(home, ['import', '--src', src, '--name', '空间丁', '--dry-run', '--max-ocr-pages', bad], { PONOS_DOC_TO_MD: fakeParser() })
       assert.equal(r.code, 1, `--max-ocr-pages ${bad} 必须报错（实际 code=${r.code}）`)
       assert.equal(r.json.error, 'bad-max-ocr-pages')
     }
     // 合法值放行（含小数 floor：与 server/tool 两层同口径，不算参数错误）
     for (const okv of ['1', '5.5']) {
-      const r = runCli(home, ['import', '--src', src, '--name', '空间丁', '--dry-run', '--max-ocr-pages', okv], { YFW_DOC_TO_MD: fakeParser() })
+      const r = runCli(home, ['import', '--src', src, '--name', '空间丁', '--dry-run', '--max-ocr-pages', okv], { PONOS_DOC_TO_MD: fakeParser() })
       assert.equal(r.code, 0, `--max-ocr-pages ${okv} 应放行（stderr=${r.stderr}）`)
       assert.equal(r.json.dryRun, true)
     }
@@ -228,7 +228,7 @@ test('--dry-run 是"存在即真"的开关：不带值 / 带值 / 带 false 一�
   const src = mkSrc({ 'a.txt': 'A' })
   try {
     for (const form of [[], ['true'], ['false']]) {
-      const r = runCli(home, ['import', '--src', src, '--name', '空间戊', '--dry-run', ...form], { YFW_DOC_TO_MD: fakeParser() })
+      const r = runCli(home, ['import', '--src', src, '--name', '空间戊', '--dry-run', ...form], { PONOS_DOC_TO_MD: fakeParser() })
       assert.equal(r.code, 0, `--dry-run ${form.join(' ')} → stderr=${r.stderr}`)
       assert.equal(r.json.dryRun, true, `--dry-run ${form.join(' ')} 必须仍是预览`)
       assert.ok(!existsSync(spaceRootOf(home, '空间戊')), '预览不得建空间')
@@ -245,16 +245,16 @@ test('P3-1：pack- 前缀 / 已存在 packs/<id> / 非法 id / 内置空间 → 
   const src = mkSrc({ 'a.txt': 'A' })
   mkdirSync(join(home, 'knowledge', 'packs', '资料包'), { recursive: true })
   try {
-    const pack = runCli(home, ['import', '--src', src, '--space', 'pack-xxx', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const pack = runCli(home, ['import', '--src', src, '--space', 'pack-xxx', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(pack.code, 1)
     assert.equal(pack.json.error, 'readonly-space', '403 语义：是权限问题，不是"名字打错了"')
-    const exist = runCli(home, ['import', '--src', src, '--space', '资料包', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const exist = runCli(home, ['import', '--src', src, '--space', '资料包', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(exist.code, 1)
     assert.equal(exist.json.error, 'readonly-space')
-    const bad = runCli(home, ['import', '--src', src, '--space', 'a/b', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const bad = runCli(home, ['import', '--src', src, '--space', 'a/b', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(bad.code, 1)
     assert.equal(bad.json.error, 'bad-space-id')
-    const builtin = runCli(home, ['import', '--src', src, '--space', 'experience', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const builtin = runCli(home, ['import', '--src', src, '--space', 'experience', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(builtin.code, 1)
     assert.equal(builtin.json.error, 'bad-space-id')
     // 四种被拒路径都不得留下空间目录
@@ -267,7 +267,7 @@ test('PONOS_HOME 指向不存在的路径 → bad-root，且**不新建**这棵�
   const ghost = join(tmpdir(), `ponos-kbimp-ghost-${process.pid}-${Date.now()}`)
   const src = mkSrc({ 'a.txt': 'A' })
   try {
-    const r = runCli(ghost, ['import', '--src', src, '--name', '空间己', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const r = runCli(ghost, ['import', '--src', src, '--name', '空间己', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r.code, 1)
     assert.equal(r.json.error, 'bad-root')
     assert.ok(!existsSync(ghost), '拼错的 configDir 不得被种出一棵树（实测踩过的病灶）')
@@ -280,7 +280,7 @@ test('P2-1：--knowledge import 与直接调 T2 模块返回同一份报告（�
   const homeB = mkHome('pipeB')
   const src = mkSrc({ 'a.txt': 'A', 'sub/b.txt': 'B', 'evil.exe': 'MZ' })
   try {
-    const cli = runCli(homeA, ['import', '--src', src, '--name', '管道空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const cli = runCli(homeA, ['import', '--src', src, '--name', '管道空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(cli.code, 0, `stderr=${cli.stderr}`)
     // 直接调模块（同一批参数）——dryRun 下不调转换器，故两份报告必须逐字段相同
     const mod = await importDocuments({ configDir: homeB, from: src, name: '管道空间', dryRun: true })
@@ -338,7 +338,7 @@ test('真进程 import --from（plan 验收命令原文写法）：与 --src 同
   const src = mkSrc({ 'a.txt': 'A', 'sub/b.txt': 'B', 'evil.exe': 'MZ' })
   try {
     const before = snap(home)
-    const from = runCli(home, ['import', '--from', src, '--space', '别名空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const from = runCli(home, ['import', '--from', src, '--space', '别名空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(from.code, 0, `--from 必须能跑通（原样报错即验收失败）：stderr=${from.stderr} stdout=${from.stdout.slice(0, 200)}`)
     assert.equal(from.json.dryRun, true)
     assert.equal(from.json.spaceId, '别名空间')
@@ -346,14 +346,14 @@ test('真进程 import --from（plan 验收命令原文写法）：与 --src 同
     assert.deepEqual(from.json.counts, { total: 3, converted: 2, skipped: 0, failed: 1 })
     assert.equal(snap(home), before, '别名路径同样必须零落盘')
     // 与权威名给出**逐字段相同**的报告（别名不是第二条口径）
-    const viaSrc = runCli(home, ['import', '--src', src, '--space', '别名空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const viaSrc = runCli(home, ['import', '--src', src, '--space', '别名空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(viaSrc.code, 0, `stderr=${viaSrc.stderr}`)
     const strip = (o) => { const { spaceRoot, ...rest } = o; return rest }
     assert.deepEqual(strip(from.json), strip(viaSrc.json), '--from 与 --src 的报告必须逐字段相同')
     // 同时给出时 --src 胜出（真进程侧复核：源换成另一个目录，报告应指向它）
     const src2 = mkSrc({ 'c.txt': 'C' })
     try {
-      const both = runCli(home, ['import', '--from', src2, '--src', src, '--space', '别名空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+      const both = runCli(home, ['import', '--from', src2, '--src', src, '--space', '别名空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
       assert.equal(both.code, 0, `stderr=${both.stderr}`)
       assert.equal(both.json.source, src, '--src 优先于 --from')
     } finally { rmSync(src2, { recursive: true, force: true }) }
@@ -369,7 +369,7 @@ test('--space 转发：真进程 import 到指定 space id，且空间由 id 定
   const home = mkHome('spc')
   const src = mkSrc({ 'a.txt': 'A' })
   try {
-    const r = runCli(home, ['import', '--src', src, '--space', '真进程空间', '--dry-run'], { YFW_DOC_TO_MD: fakeParser() })
+    const r = runCli(home, ['import', '--src', src, '--space', '真进程空间', '--dry-run'], { PONOS_DOC_TO_MD: fakeParser() })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.equal(r.json.spaceId, '真进程空间', '--space 漏转发时这里会变成 bad-space-id')
     assert.equal(r.json.spaceName, '真进程空间')

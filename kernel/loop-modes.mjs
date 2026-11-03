@@ -13,12 +13,18 @@
 // 本模块只服务**对话主循环**的模式选择（engine runTurnInternal 轮首）。
 import { MAIN_PROFILE, validateProfile } from './loop-profile.mjs'
 
-/** 实际模式（决定 profile 与指令）。顺序 = 展示序（默认在前）。 */
-export const LOOP_MODES = ['react', 'plan', 'reflect']
+/** 实际模式（决定 profile 与指令）。顺序 = 展示序（默认在前）。
+ *  ★ 2026-10-29：新增 `subagent`（用户要求"新增一个真正的 subagent 模式"）。
+ *    它是**用户钉住专属**档：不由 auto 路由产出（见 mode-router 的 ROUTABLE_LOOP_MODES），
+ *    语义 = 把这一轮拆成可并行的子任务交给子 Agent 执行、自己只做汇总；
+ *    与 plan/react/reflect 一样，v1 的模式差异**只在指令注入**（+ 观测量），
+ *    守卫/profile 逐项同 MAIN（不许因为"新档"就少几个守卫）。
+ *    追加在末位而不是插在 react 之后：react 必须保持默认档的位置语义（零回归基线）。 */
+export const LOOP_MODES = ['react', 'plan', 'reflect', 'subagent']
 
 /**
  * 选择器全集 = `auto` + 实际模式。`auto` 不是模式，是"交还引擎路由判定"的选择态
- * （用户钉住 plan/react/reflect 时覆盖路由；auto 时由 mode-router 每用户轮判定）。
+ * （用户钉住模式时覆盖路由；auto 时由 mode-router 每用户轮判定）。
  */
 export const LOOP_MODE_SELECTORS = ['auto', ...LOOP_MODES]
 
@@ -35,7 +41,7 @@ export const DEFAULT_EFFECTIVE_MODE = 'react'
  * 完成（编译期与运行期同一判据），而不是靠 JSDoc 的 `@type` 断言把类型静默写成谎话。
  * 行为上与 `LOOP_MODES.includes` 等价：空值/未知值一律 false（调用方保持当前模式）。
  * @param {unknown} v
- * @returns {v is 'react'|'plan'|'reflect'}
+ * @returns {v is 'react'|'plan'|'reflect'|'subagent'}
  */
 export function isEffectiveLoopMode(v) {
   return typeof v === 'string' && LOOP_MODES.includes(v)
@@ -45,7 +51,7 @@ export function isEffectiveLoopMode(v) {
  * 归一化选择器值。**非法值返回 null**（不静默改档——回落策略由调用方决定并上报，
  * 与 approval_mode 的 rejected 事件同款纪律；静默回落会让"档位没生效"无人可见）。
  * @param {unknown} value
- * @returns {null | 'auto' | 'react' | 'plan' | 'reflect'}
+ * @returns {null | 'auto' | 'react' | 'plan' | 'reflect' | 'subagent'}
  */
 export function normalizeLoopMode(value) {
   const v = String(value ?? '').trim().toLowerCase()
@@ -93,6 +99,9 @@ const MODE_DIRECTIVES = {
   react: '【循环模式·REACT】当前为常规执行：直接推进任务——需要工具就调用、拿到结果继续，直到完成或需要用户决策。',
   plan: '【循环模式·PLAN】当前为计划模式：动手前先给出一个简短可读的执行计划（条目化），随进展更新；按计划逐项执行，计划有变化时同步说明。',
   reflect: '【循环模式·REFLECT】当前为反思模式：先复盘先前的失败/停滞链路（发生了什么、为什么、哪种做法证明无效），写成简短结论，再提出并执行一条与已失败做法不同的推进路径；不要重复无效做法。',
+  // 2026-10-29 用户要求新增档。指令写法与其余三条同构（前缀稳定可断言、只描述**做法**不承诺能力）：
+  // "拆成并行子任务 + 自己只做汇总"——不写"会自动开 N 个子 Agent"这种我们无法保证的承诺。
+  subagent: '【循环模式·SUBAGENT】当前为子 Agent 并行模式：把这一轮的工作拆成若干可独立推进的子任务，用 `Agent` 工具并行派出去（同轮可发多个，互不依赖的必须一次并发而不是排队）——每个子任务写清目标、边界与自己能验证的完成条件；你只负责分派、汇总与最终决策，不要串行地亲手做完所有步骤。',
 }
 
 /**

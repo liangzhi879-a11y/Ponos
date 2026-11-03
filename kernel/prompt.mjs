@@ -4,17 +4,22 @@
 //   1. buildBaseSystemPrompt —— 内核基础行为规范（身份：Ponos + 工具纪律/
 //      回复规范）。身份内置于基础层，使 TUI/CLI 直跑时模型即自称 Ponos。
 //   2. discoverAgentsMd —— 项目指令 AGENTS.md（cwd 及祖先链至 git root，
-//      加 --add-dir 根目录），成熟方案（Claude Code 等）的标配。
+//      加 --add-dir 根目录），成熟方案的标配。
 //   3. append 文件（cli 注入的 GUI 提示词：身份/技能/格式规范）——最高优先级，
 //      GUI 层仍可覆盖/强化身份声明。
 import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+// S1.3（2026-09-26）：仪表接线 —— 本文件的分段计量循环**已算出每段真实字节数**，是唯一
+// "不重复计算"的埋点位置（无环：knowledge-inject.mjs 的静态依赖闭包不触达 prompt.mjs，
+// 见 kernel-tests/arch-graph-cycles.test.mjs 的环基线守卫）。
+import { recordChannel, recordSource } from './knowledge-inject.mjs'
 
 // 从 cwd 向上到 git root（含），以及 addDirs 根目录，发现 AGENTS.md。
 // 返回 [{ path, content }]，近者优先、去重。
 export function discoverAgentsMd({ cwd, addDirs = [] }) {
   const found = []
   const seen = new Set()
+  const seenContent = new Set()
   const candidates = []
   let dir = cwd
   while (dir) {
@@ -32,6 +37,17 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
       seen.add(p)
       let content = ''
       try { content = readFileSync(p, 'utf-8') } catch { continue }
+      // ★ 内容级去重（2026-09-20）：同一份规范出现在**多个候选路径**时只注入一次。
+      //   实测场景：调试版（便携版）目录 `release/Ponos` 就在**仓库内部**，从它上溯会同时命中
+      //   「release/Ponos/AGENTS.md」（同步副本）与「<仓库根>/AGENTS.md」（原版）——
+      //   两者内容相同却因 **path 不同**各注入一次（实测返回 7732 字符 ≈ 两份之和）；
+      //   若两份因同步时机不同而漂移（本次实测 83 行 vs 81 行），模型还会同时收到**互相矛盾**的两版规范。
+      //   内容相同 ⇒ 保留更近的那份（近者优先语义不变）；内容不同 ⇒ 仍各自注入（多项目规则是设计意图）。
+      const key = content.trim()
+      if (key) {
+        if (seenContent.has(key)) continue
+        seenContent.add(key)
+      }
       found.push({ path: p, content })
     }
   }
@@ -39,11 +55,18 @@ export function discoverAgentsMd({ cwd, addDirs = [] }) {
 }
 
 // 内核基础行为规范（LLM 行为逻辑）：Ponos 身份 + 工作规范。
-// cwd 注入当前工作目录（对照 claude 的 "Primary working directory:" 注入），
+// cwd 注入当前工作目录（对照同类的 "Primary working directory:" 注入），
 // 让模型基于确定路径规划工具调用，减少试错式路径猜测。
 // tier（2026-09-09 本地模型适配）：'full'（缺省，现状）| 'lean'（本地弱模型精简版）。
 // lean 剪枝原则：只删有引擎守卫兜底的细则（计划尾/想完即停/报错重试均在
-// engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范/可用工具列表）一字不动。
+// engine.mjs 注入自愈），功能协议核心（工具纪律/回复规范）一字不动。
+//
+// 【2026-09-18 P0-3】原来末行还有 `可用工具：…`，现已**下沉**到 composeSystemPrompt 的
+// 最后一个 parts（见该函数末尾）。理由：这行内容随 toolNames 变化（MCP 晚到、应用绑定、
+// 工作流增删都会改它），原先位于 system 前 1/3，**一变就把 system 中后段（子 Agent / 项目
+// 指令 / 技能 / 工作流 / 知识库 / 记忆）全部打穿**——是所有失效源里最贵的一个。下沉到最末
+// 后，失效范围收缩到"这一行自身"，前面全部仍可复用（内容一字未删，提示强度不变；工具清单
+// 与 tools 数组本就重复冗余）。
 export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' } = {}) {
   const lean = tier === 'lean'
   const toolDiscipline = [
@@ -101,7 +124,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
     '【改动聚焦】',
     ...changeFocus,
     '',
-    // 循环防护（2026-09-10 借鉴 claude-code 提示词）：CC 实测同款弱模型循环率显著更低，
+    // 循环防护（2026-09-10 借鉴业界提示词实践）：实测同款弱模型循环率显著更低，
     // 其提示词含显式反循环纪律（prompts.ts：拒绝后不重试同一调用 / 失败先诊断再换策略）。
     // 与 engine 守卫⑥（无进展自愈注入）分层：提示词层预防，守卫层兜底。
     '【循环防护】',
@@ -113,7 +136,6 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
     '- 引用代码时标注 file_path:line 便于定位。',
     '- 需要用户决策时列出选项，不要擅自执行高风险操作。',
     '- 对话历史超长时系统会自动压缩上下文，勿因此焦虑或反复重读旧内容。',
-    `可用工具：${(toolNames || []).join(', ')}。`,
   ].join('\n')
 }
 
@@ -126,7 +148,7 @@ export function buildBaseSystemPrompt({ toolNames = [], cwd = '', tier = 'full' 
 // 检索纪律，与 CHAT_MODE_DISALLOWED（kernel/tools.mjs）同口径。
 export function buildChatSystemPrompt({ toolNames = [] } = {}) {
   return [
-    '你是 YFWorking（远方工作台）的联网助理，当前处于**聊天模式**：只做网页检索与资料整理——搜索网页、抓取正文，然后基于检索结果回答。除此之外没有本地能力。',
+    '你是 Ponos（远方工作台）的联网助理，当前处于**聊天模式**：只做网页检索与资料整理——搜索网页、抓取正文，然后基于检索结果回答。除此之外没有本地能力。',
     '',
     '【能力边界（必须如实告知，禁止假装）】',
     `- 可用工具只有：${(toolNames || []).join(', ') || '（无）'}。没有文件读写、没有命令执行、没有子 Agent / 技能 / 工作流。`,
@@ -148,14 +170,204 @@ export function buildChatSystemPrompt({ toolNames = [] } = {}) {
   ].join('\n')
 }
 
+/**
+ * 【本会话知识库】区块（2026-09-15，P1 spec §3.5）。
+ *
+ * **why 要有这一段**：工具层的范围收窄（`kernel/tools.mjs` 的 knowledgeSpaces）是"防越界"，
+ * 但只做防守会让模型陷入猜谜——它不知道本会话能查哪些库、更不知道"查不到"是因为越界还是因为
+ * 真没有。把范围**写进提示词**，"可调用性"才从"配了就算"变成"模型知道自己有什么"。
+ *
+ * 两条边界纪律：
+ *   ① 只列**未关联库的名字**（不列 id、不列根路径）：模型要做的是"请用户去点关联"，
+ *      不是拼 id；把 id 摆出来反而诱导它硬写 spaces 参数去试探。
+ *   ② 未关联库最多列 12 个（`等 N 个` 收尾）：储备库可能有几十个，全列会把这个区块本身
+ *      变成上下文膨胀源——与它要解决的膨胀问题自相矛盾。
+ */
+/**
+ * 本次工具集里是否真的给了"按路径读文件"的能力（Read + Grep 缺一不可）。
+ *
+ * why 不看 mode：chat/task 只是**默认**工具集不同，真正决定"能不能 Read 知识库文件"
+ * 的是那份 toolNames（tier、子 agent、禁用工具都会改它）。提示词若与实际能力不一致，
+ * 比不提示更糟 —— 模型会照提示去 Grep 然后撞拒绝，白烧一轮并污染上下文。
+ */
+function canReadFiles(toolNames) {
+  const set = new Set(Array.isArray(toolNames) ? toolNames : [])
+  return set.has('Read') && set.has('Grep')
+}
+
+const __segPromptBytes = { systemPrompt: 0, toolSchema: 0, skill: 0, skillCatalog: 0, injected: 0 }
+export function getPromptSegmentMeters() {
+  return {
+    systemPromptBytes: __segPromptBytes.systemPrompt,
+    toolSchemaBytes: __segPromptBytes.toolSchema,
+    skillBytes: __segPromptBytes.skill,
+    // S1.3 Task 2 / Step 4b 新增：**只算【可用技能】段**的目录字节。
+    // why 要另立一个字段而不是改 skillBytes：skillBytes 是【技能与编排】【可用技能】
+    // 【可用工作流】【可用子 Agent】四段之和（既有消费方 = kernel/cli.mjs 轮末
+    // `store.appendMeta('inject_snapshot', …)` 里的四段 `segments` 字面量（2026-09-26 终审修复轮
+    // 实测行号 **1733-1746**；行号会随该文件演进漂移，故以符号为准）与
+    // kernel/inject-ledger.mjs 的 buildSegmentMeters 都按这个口径读，
+    // 且 kernel-tests/inject-ledger.test.mjs 有字面量断言）——用四段之和对技能目录设限，
+    // 会连带把工作流/子 Agent 清单一起压掉（口径错位）。故：只增不改。
+    // ★ 本字段（skillCatalogBytes）是 **skill 段的子集**，故它**不进** segments：它作为
+    //   inject_snapshot 的**顶层观测字段**进台账（进 segments 会让 totalBytes 重复计数）。
+    skillCatalogBytes: __segPromptBytes.skillCatalog,
+    injectedBytes: __segPromptBytes.injected,
+  }
+}
+export function resetPromptSegmentMeters() {
+  __segPromptBytes.systemPrompt = 0; __segPromptBytes.toolSchema = 0
+  __segPromptBytes.skill = 0; __segPromptBytes.skillCatalog = 0; __segPromptBytes.injected = 0
+}
+
+export function renderKnowledgeScope(scope, { readEnabled = false } = {}) {
+  const names = Array.isArray(scope?.names) ? scope.names.filter(Boolean) : []
+  if (!names.length) return ''
+  const lines = [`【本会话知识库】可检索：${names.join('、')}（KnowledgeSearch 的 spaces 只能取这里列出的库）。`]
+  // 能力可见性（2026-09-18，P3）：已授权空间的文件**同时**进了只读白名单（Read/Grep 可用）。
+  // why 要写出来：工具层打通了边界、但模型不知道，等于白打通 —— 它会退回"一次次 KnowledgeSearch"
+  // 而不会去做"跨文档 grep 核验"（外部消融显示后者恰是收益最大的一环）。
+  // **必须由调用方按"本次真的给了 Read/Grep"来开关**：不一致的提示比不提示更糟
+  // （模型会照提示去 Grep，然后撞拒绝，白烧一轮）—— 只陈述能力，不列路径（路径在工具回执里给）。
+  if (readEnabled) {
+    lines.push('这些库的文件可直接用 Read/Grep 打开（只读）：已知编号/原文片段要跨文档比对时，直接 Grep 比反复检索更省事。')
+  }
+  const un = Array.isArray(scope?.unassociated) ? scope.unassociated.filter(Boolean) : []
+  if (un.length) {
+    lines.push(`未关联的库（${un.slice(0, 12).join('、')}${un.length > 12 ? ` 等共 ${un.length} 个` : ''}）不在本会话范围内：用户要用时请其先在知识面板把该库「关联到当前会话」，不要反复重试同一检索。`)
+  }
+  return lines.join('\n')
+}
+
+/** 【可用技能】清单标题行（**唯一真源**：渲染与计量都以它的前缀判段） */
+const SKILL_CATALOG_HEAD = '【可用技能】任务与以下技能匹配时，用 Skill 工具调用对应技能（skill 参数填技能名），不得自行模拟或改用其它方式；无匹配则按普通对话处理：'
+/**
+ * 技能清单的详略候选（T1.2，2026-10-20 重定：**按实际字节择优，不按固定顺序硬走**）。
+ *
+ * ★ 旧实现是固定序列 `['triggers','desc','ids']` 逐个试，而实测 triggers 14,885 B < desc
+ *   22,332 B ⇒ **档位非单调**：任何 < 14.9 KB 的预算都会跳过 desc 直接掉到 ids（2,076 B），
+ *   一次掉 12.8 KB —— 触发词全丢，"技能该用没用"必然上升。这不是节省，是悬崖。
+ *
+ * ★ 但也不能简单地"把 desc 删掉"：desc 与 triggers 谁更小**取决于技能库本身**
+ *   （有的库描述很短、触发词很长——此时 desc 才是合理的降级档，既有用例正是这种库）。
+ *   ⇒ 正确做法：把所有候选**都渲染出来，按偏好顺序挑"装得下的最详"那一档**。
+ *   这样既保证单调（预算越大只会更好，never 更差），也不会在某种库上出现悬崖。
+ *
+ * 偏好顺序（越靠前越详）：全量触发词 → 描述 → 触发词逐级截短 → 仅 id。
+ */
+const SKILL_CATALOG_CANDIDATES = [
+  { tier: 'triggers', trunc: 0 },    // 全量触发词（缺省档，逐字节等同改动前）
+  { tier: 'desc', trunc: 0 },        // 只给描述（当描述比触发词短时，这是合理的中间档）
+  { tier: 'triggers', trunc: 48 },
+  { tier: 'triggers', trunc: 40 },   // 真实技能库实测 ≈9,481 B
+  { tier: 'triggers', trunc: 32 },
+  { tier: 'triggers', trunc: 24 },   // 真实技能库实测 ≈7,288 B（建议默认 8 KB 落这一档）
+]
+
+/**
+ * 技能清单天花板的**设置值解析**（Task 2 收尾轮，2026-09-26）—— 纯函数（吃 settings 对象，返回数值）。
+ *
+ * why 要有这个函数（"机制存在 ≠ 机制生效"）：`composeSystemPrompt` 的 `skillCatalogBudgetBytes` 是
+ * **可选**参数，若无人传它，天花板默认永不生效 —— 上一轮就是这种状态（接口就位、零调用方）。
+ * 把"设置 → 上限值"的解读收成一个具名纯函数，调用方（`kernel/cli.mjs`）就不必各自手写
+ * `Number(...) > 0 ? floor : null`；口径只有一处，配套用例也能直接驱动它（无需起内核进程）。
+ * 仿既有先例：`kernel/knowledge-inject.mjs#resolveInjectBudget`、`kernel/compact.mjs#resolveCompactSettings`
+ * 都是"feature 模块自带 settings 解析器"，settings.json 的**文件读取**仍归 cli.mjs 的 loadSettings。
+ *
+ * 设置路径：`settings.skill.catalogBudgetBytes`。
+ * **缺省不设限**（未配置 / null / 0 / 负数 / 非数字 / 非有限 ⇒ 一律 null ⇒ 渲染端不截断，
+ * 存量逐字节零变化）：给一个会改变既有行为的默认数字，等于替所有用户偷偷改提示词。
+ * ★ 正数一律 floor 取整（与 settings.workflow.publicLimit 的 `Math.floor` 同口径）。
+ */
+export function resolveSkillCatalogBudget({ settings = null, env = process.env } = {}) {
+  // T1.2/T3.2（2026-10-20）：环境变量优先（`PONOS_SKILL_CATALOG_BUDGET`）。
+  // 为什么加这条：改默认要在"A/B 通过后"才能做，而验证阶段需要**不改用户配置文件**就能
+  // 试不同档位（一行 env 即可、随时撤回）。`0`/`off` 明确表示"不设限"。
+  const rawEnv = env?.PONOS_SKILL_CATALOG_BUDGET
+  if (rawEnv !== undefined && rawEnv !== null && String(rawEnv) !== '') {
+    const s = String(rawEnv).toLowerCase()
+    if (['0', 'off', 'none', 'false'].includes(s)) return null
+    const e = Number(rawEnv)
+    if (Number.isFinite(e) && e > 0) return Math.floor(e)
+    // 配了非法值 ⇒ 回落到设置/缺省（不因一个错值把清单渲染弄坏）
+  }
+  const n = Number(settings?.skill?.catalogBudgetBytes)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+}
+
+/**
+ * 【可用技能】清单渲染 —— 带**可选**字节天花板（S1.3 Task 2 / Step 4b，2026-09-26）。
+ *
+ * why 设限放在**渲染处**：清单是模型真正看到的那份文本，预算必须约束"实际装入"的东西；
+ * 与 renderKnowledgeScope 的既有纪律同款（那里的 `slice(0, 12) + 等共 N 个`）。
+ *
+ * 三档降级，**保留全部 id 是最高优先**（AI 必须知道有哪些技能可用，丢 id = 丢能力）：
+ *   `triggers`（改动前形态：触发词，空则回退描述）→ `desc`（只给描述）→ `ids`（只列 id +
+ *   "…等 N 个"提示：既省字节，又不让模型误以为技能就这么几个）。
+ * 三档都装不下时取 `ids` 终档（宁超预算也不丢技能）——超限由调用方从 skillCatalogBytes 观测。
+ * 子技能仍内联在父技能行（既有语义一字不改），其字节自然计入预算。
+ *
+ * **缺省不设限**：budget 缺省/非正/非数字 ⇒ 一律 `triggers` 档（逐字节等同改动前，存量零变化）。
+ * ★ "0 预算"不解释为"不注入"：技能清单凭空消失会让模型以为没有可用技能。
+ * 上限由调用方经 `composeSystemPrompt` 的 `skillCatalogBudgetBytes` 传入（本模块不读 settings 文件：
+ * 提示词组装保持纯函数，settings.json 的读取归属 cli.mjs 的 loadSettings；把设置对象换算成上限值的
+ * 纯函数是本文件的 `resolveSkillCatalogBudget`，调用方一处调用即可，见 kernel/cli.mjs）。
+ */
+export function renderSkillCatalog(skills, budgetBytes = null) {
+  const subsOf = new Map()
+  for (const s of skills) if (s.parent) subsOf.set(s.parent, [...(subsOf.get(s.parent) || []), s.id])
+  const build = (tier, trunc = 0) => {
+    const lines = [SKILL_CATALOG_HEAD]
+    if (tier === 'ids') {
+      lines.push(`（因技能清单字节预算受限，以下…等 ${skills.length} 个技能仅列 id：触发词与说明已省略，用 Skill 工具加载对应技能可见完整说明）`)
+    }
+    // 触发词上限：0 = 既有 80 字；其余档位按阶梯截短（T1.2：每档只丢一点细节，不一步丢光）
+    const trigCap = trunc > 0 ? trunc : 80
+    for (const s of skills) {
+      if (s.parent) continue
+      const trig = Array.isArray(s.triggers) && s.triggers.length ? s.triggers.join('、').slice(0, trigCap) : ''
+      const subs = subsOf.get(s.id)
+      const tail = subs && subs.length ? `（子：${subs.join('、')}）` : ''
+      if (tier === 'ids') { lines.push(`- ${s.id}${tail}`); continue }
+      // `desc` 档：只给描述（描述为空时回退触发词，与旧实现同口径）
+      if (tier === 'desc') {
+        const d = (s.description || '').slice(0, 120) || trig
+        lines.push(`- ${s.id}：${d}${tail}`)
+        continue
+      }
+      // `triggers` 档：触发词优先，空则回退描述（既有语义，一字不改）
+      const head = trig || (s.description || '').slice(0, 120)
+      lines.push(`- ${s.id}：${head}${tail}`)
+    }
+    return lines.join('\n')
+  }
+  const budget = Number(budgetBytes)
+  if (!(Number.isFinite(budget) && budget > 0)) return build('triggers')
+  // 按**偏好顺序**取第一个装得下的候选（偏好 = 越靠前越详）：
+  // 这样"预算越大 → 只能选到同样详或更详的档"天然成立（单调），且不依赖某一档的固定大小顺序。
+  for (const step of SKILL_CATALOG_CANDIDATES) {
+    const text = build(step.tier, step.trunc)
+    if (Buffer.byteLength(text, 'utf8') <= budget) return text
+  }
+  // 全都装不下 ⇒ id 终档（宁超预算也不丢技能：丢 id = 丢能力）
+  return build('ids')
+}
+
 // 三层组装：base + 可用子 Agent 区块 + AGENTS.md（带来源标注）+ append 文件
 // （最后，最高优先级）。subagents 为内置 ∪ 用户级的子 Agent 表（Agent 工具路由依据）。
 // mode='chat'（2026-09-12 会话模式隔离）：只走 chat 专用提示 + append，任务模式的
 // 一切区块（子 Agent / 项目指令 / 技能 / 工作流 / 记忆）**一律不注入**——即便调用方
 // 传了也忽略（提示词层与工具层各自独立收口，任一层失效都不至于把任务能力泄进 chat）。
-export function composeSystemPrompt({ toolNames, agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', tier = 'full', mode = 'task' }) {
+export function composeSystemPrompt({ toolNames, deferredToolNames = [], agents, subagents = [], append = '', cwd = '', skills = [], workflows = [], memory = '', atlas = '', tier = 'full', mode = 'task', knowledgeScope = null, skillCatalogBudgetBytes = null }) {
   if (mode === 'chat') {
     const chatParts = [buildChatSystemPrompt({ toolNames })]
+    // 会话知识范围（2026-09-15，P1 spec §3.5）：chat 也渲染——chat 里 KnowledgeSearch 是放行的
+    // （S3 D2 的决定：只读检索不吃"纯聊不做本地执行"的隔离承诺），那么"能用哪些库"就必须同样
+    // 对模型可见，否则它只能靠猜（猜错 = 拒绝，用户看到的是"聊天不会用我的知识库"）。
+    // chat 下 Read/Grep 本来就不给（隔离承诺）→ readEnabled 由**实际工具集**判定，
+    // 不用 mode 猜：只有真给了 Read 与 Grep 才敢说"可直接打开"，否则模型会白撞一次拒绝。
+    const kb = renderKnowledgeScope(knowledgeScope, { readEnabled: canReadFiles(toolNames) })
+    if (kb) chatParts.push(kb)
     if (append && append.trim()) chatParts.push(append.trim())
     return chatParts.join('\n\n')
   }
@@ -188,18 +400,10 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
   }
   if (skills && skills.length > 0) {
     // P8 业务适配：技能块带触发词 + 父子结构（父技能条目内联子技能，子技能不单独成条），
-    // 与宿主原清单语义对齐；触发词为空时回退描述（截 120）
-    const lines = ['【可用技能】任务与以下技能匹配时，用 Skill 工具调用对应技能（skill 参数填技能名），不得自行模拟或改用其它方式；无匹配则按普通对话处理：']
-    const subsOf = new Map()
-    for (const s of skills) if (s.parent) subsOf.set(s.parent, [...(subsOf.get(s.parent) || []), s.id])
-    for (const s of skills) {
-      if (s.parent) continue
-      const trig = Array.isArray(s.triggers) && s.triggers.length ? s.triggers.join('、').slice(0, 80) : ''
-      const head = trig || (s.description || '').slice(0, 120)
-      const subs = subsOf.get(s.id)
-      lines.push(`- ${s.id}：${head}${subs && subs.length ? `（子：${subs.join('、')}）` : ''}`)
-    }
-    parts.push(lines.join('\n'))
+    // 与宿主原清单语义对齐；触发词为空时回退描述（截 120）。
+    // S1.3 Task 2 / Step 4b：渲染下沉到 renderSkillCatalog，并接**可选**字节天花板
+    // （缺省不设限 ⇒ 与改动前逐字节相同）。
+    parts.push(renderSkillCatalog(skills, skillCatalogBudgetBytes))
   }
   if (workflows && workflows.length > 0) {
     // 工作流独立区块：定位=严格输出（确定性 DAG + 审计留痕）。与技能区分——
@@ -216,9 +420,68 @@ export function composeSystemPrompt({ toolNames, agents, subagents = [], append 
     }
     parts.push(lines.join('\n'))
   }
+  const kbBlock = renderKnowledgeScope(knowledgeScope, { readEnabled: canReadFiles(toolNames) })
+  if (kbBlock) parts.push(kbBlock)
   if (memory && memory.trim()) parts.push(memory.trim())
+  // Project Atlas（P1.1）：knowledge/memory 之后、append 之前。区块由 cli 的
+  // buildAtlasBlock 生成并已按预算截断；本函数只负责放进静态前缀，chat 分支
+  // 在上面已提前 return（纯聊不注入任何项目结构）。
+  if (atlas && atlas.trim()) parts.push(atlas.trim())
   if (append && append.trim()) parts.push(append.trim())
-  return parts.join('\n\n')
+  // 【2026-09-18 P0-3】工具清单**必须放在 system 最末**：它是整个 system 里唯一随工具集变化的
+  // 内容（MCP 晚到 / 应用绑定 / 工作流增删即变）。放在前部会把其后所有段落一起打穿（前缀缓存
+  // 逐字节匹配，断裂点之后全部重算 + 重写）；放末尾则失效范围只剩这一行。原先它在
+  // buildBaseSystemPrompt 的末行（system 前 1/3 处），故下沉到此处——内容一字未删。
+  if (toolNames && toolNames.length) parts.push(`可用工具：${toolNames.join(', ')}。`)
+  // ★ deferred（2026-10-26）：**按需加载**的工具只投名字，schema 由 ToolSearch 取回。
+  //   范式见 kernel/tool-search.mjs 顶部（Claude Code 的 ToolSearch / Codex 的 tool_search）。
+  //   位置紧跟"可用工具"行、同在 system 最末 —— 与上面同一条缓存理由：这份名单同样随工具集
+  //   变化（MCP 晚到即变），放尾部才能把前缀缓存的失效范围压到最小。
+  //   为什么必须投这行：不投 ⇒ 模型不知道有这些工具（等于把它们删了，就是"裁剪"的老问题）；
+  //   投 schema ⇒ 前缀被撑满（现场实测 110 个工具 380 KB ≈ 79% 窗口）。名字是唯一正确粒度。
+  if (deferredToolNames && deferredToolNames.length) {
+    // ★ 示例里**不能**用名单里的真实工具名：那会让该名字在同一行出现两次，
+    //   下游按名字解析（测试、统计、去重）都会把它当成两个工具。示例是语法说明，用占位符即可。
+    parts.push(`按需加载的工具（参数结构未随上下文发送，需先用 ToolSearch 取回，如 \`select:工具名\`）：${deferredToolNames.join(', ')}。`)
+  }
+  const sys = parts.join('\n\n')
+  // S1+/O4：清零后按本文档段落就地处累加（★ 不重排、不拼接，仅取长度）
+  resetPromptSegmentMeters()
+  // S1.3 Task 2（2026-09-26）：本轮 systemPrompt 的渠道小计。一次 composeSystemPrompt 调用
+  // = 一次"静态渠道"注入：calls = 段数、hits = 非空段数、injectedBytes = 实测字节和。
+  const __chan = { calls: 0, hits: 0, injectedBytes: 0 }
+  for (const p of parts) {
+    const b = Buffer.byteLength(p, 'utf8') + 2 // +2 是 join 的 '\n\n' 字节
+    if (p.startsWith('# 项目指令')) __segPromptBytes.systemPrompt += b
+    // base 系统提示（实测前缀为「你是 Ponos...」或【工具纪律】，与"项目指令"以 # 开头相区别）
+    else if (p.startsWith('【技能与编排】') || p.startsWith('【可用技能】') || p.startsWith('【可用工作流】') || p.startsWith('【可用子 Agent】')) __segPromptBytes.skill += b
+    else if (p.startsWith('可用工具：')) __segPromptBytes.toolSchema += b
+    else if (p.startsWith('你是 Ponos') || p.startsWith('You are') || p.startsWith('你是一个') || p.startsWith('【工具纪律】')) __segPromptBytes.systemPrompt += b
+    else __segPromptBytes.injected += b
+    // S1.3 Task 2 / Step 4b：**【可用技能】单独再计一次**（只增不改口径）—— 技能清单天花板
+    // 只该看这一段；skillBytes 是四段之和，拿它设限会连带压掉工作流/子 Agent 清单。
+    if (p.startsWith('【可用技能】')) __segPromptBytes.skillCatalog += b
+
+    // ★ 仪表接线（2026-09-26）：这里已有每段的真实字节数，是唯一"不重复计算"的埋点位置
+    //   （此前 recordChannel/recordSource 零业务调用 ⇒ 相关渠道/来源恒 0）。
+    //   来源归因：技能与编排四段 → skill；工具 schema → toolSchema；其余（base 人格段、
+    //   项目指令、知识库范围、记忆、append）→ systemPrompt。每段**恰好**归入一个来源，
+    //   故三者之和恒等于 static 渠道字节。
+    //   渠道：整份 systemPrompt 都是随会话固定下来的静态前缀，故统一记 static
+    //   （bridge/guard/payload 的埋点在各自注入点，不在本函数）。
+    if (p.startsWith('【技能与编排】') || p.startsWith('【可用技能】') || p.startsWith('【可用工作流】') || p.startsWith('【可用子 Agent】')) {
+      recordSource('skill', b)
+    } else if (p.startsWith('可用工具：')) {
+      recordSource('toolSchema', b)
+    } else {
+      recordSource('systemPrompt', b)
+    }
+    __chan.calls += 1
+    __chan.injectedBytes += b
+    if (b > 0) __chan.hits += 1
+  }
+  recordChannel('static', { calls: __chan.calls, hits: __chan.hits, injectedBytes: __chan.injectedBytes })
+  return sys
 }
 
 // 子 lane 系统提示词补齐技能目录（2026-09-12 AS2）。
@@ -233,4 +496,13 @@ export function withLaneSkillCatalog(sysPrompt, { agentSkills = [], skillIds = [
   const ids = declared.length ? declared : (Array.isArray(skillIds) ? skillIds.filter(Boolean) : [])
   if (!ids.length) return sysPrompt
   return `${sysPrompt}\n可用技能（Skill 工具，skill 参数填 id）：${ids.join('、')}`
+}
+
+/**
+ * 子 lane 追加项目地图块（P1.1）。空串原样返回，不引入空段落；
+ * 文本由 `kernel/atlas/inject.mjs#buildAtlasBlock` 生成并已按 lane 预算截断。
+ */
+export function withLaneAtlasPrompt(sysPrompt, atlasBlock) {
+  const block = String(atlasBlock ?? '').trim()
+  return block ? `${sysPrompt}\n\n${block}` : sysPrompt
 }

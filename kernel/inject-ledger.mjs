@@ -66,6 +66,8 @@ function normalizeBySource(bs) {
  * 渠道缺失为 null（区分"未走该渠道"与"走了但 0 命中"）；
  * ★ 但显式传入的 0 必须保留（"记忆注入关闭 ⇒ 记 0 而非不记"，spec :211）。
  * `skillCatalogBytes`：**顶层观测字段**（不在 `segments` 里，理由见其上方长注释）；缺失/非法按 0。
+ * `toolListLineBytes` / `toolSchemaCount`：T0.1 新增的**顶层观测字段**（同上：不进 `segments`）；
+ * `toolSchema` **段**自 T0.1 起计 tools[] 真实 schema 字节（口径修正，段名不变）。
  * @param {{ turn?: number, seq?: number, segments?: any[], channels?: any, bySource?: any, promptTier?: any, sessionMode?: any, kb?: any, ts?: number, [key: string]: any }} [opts]
  */
 export function summarizeInjection({
@@ -88,6 +90,17 @@ export function summarizeInjection({
     //   kit 的 T1 棘轮基线；新增一条会顶格棘轮 —— 本门禁"只许降不许升"）。故用 `...observed` 收下，
     //   用一次内联类型断言取值：既不新增欠账，也不改动既有 9 条的口径。
     skillCatalogBytes: n(/** @type {{ skillCatalogBytes?: number }} */ (observed).skillCatalogBytes),
+    // ★ T0.1（计量补全）新增的两个**顶层观测字段**（同 skillCatalogBytes 的处境：都只增不改、
+    //   都不进 `segments`）。口径修正：`toolSchema` **段**改为计 tools[] 真实 schema 字节
+    //   （实测 ≈31 KB/请求，来源 = cli 侧 `engine.tools.toolSchemas()` 实测），此前该段取的是
+    //   system 文本里「可用工具：…」那一**行**（≈237 B）——两者不是包含关系（一个在 tools[] 面、
+    //   一个在 system 文本里），故旧读数只能另立字段，不能当新段的子集：
+    //   · toolListLineBytes：那行名单的字节（旧 toolSchema 段口径，prompt.mjs#getPromptSegmentMeters）。
+    //   · toolSchemaCount：本轮发出去的 schema 条数（用来判"面相是否真的变了"）。
+    //   归一化与 segments[].bytes 同款（缺失/非法 ⇒ 0），仍用 `...observed` + 内联断言取，
+    //   避免多解构一个字段就多一条 `does not exist on type '{}'` 的类型欠账。
+    toolListLineBytes: n(/** @type {{ toolListLineBytes?: number }} */ (observed).toolListLineBytes),
+    toolSchemaCount: n(/** @type {{ toolSchemaCount?: number }} */ (observed).toolSchemaCount),
     channels: outChannels,
     bySource: normalizeBySource(bySource),
     promptTier: promptTier ?? null,
@@ -119,6 +132,41 @@ export function ledgerTotals(records) {
   }
   return { totalBytes, bySegment, byChannel, bySource }
 }
+
+// ── Project Atlas 观测（P1.1）──────────────────────────────────────────────
+// 与知识注入同款：进程内累加、不落盘。`getInjectStats()` 以 `atlas` 键透出，
+// 旧字段一个不动（只增不删）。
+export const ATLAS_QUERY_OPS = ['overview', 'find', 'search', 'card', 'impact', 'related', 'path', 'build']
+function freshAtlasStats() {
+  return {
+    builds: 0,
+    incrementalHits: 0,
+    queries: Object.fromEntries(ATLAS_QUERY_OPS.map((op) => [op, 0])),
+    staleServed: 0,
+    injectBytes: 0,
+    errors: 0,
+  }
+}
+let __atlas = freshAtlasStats()
+
+/**
+ * 登记一次 Atlas 事件。所有字段可选；未知 op 不计数（防拼写错误被静默记到别处）。
+ * @param {{build?:boolean, incremental?:boolean, op?:string, stale?:boolean, injectBytes?:number, error?:boolean}} [evt]
+ */
+export function recordAtlas(evt = {}) {
+  if (evt.build) __atlas.builds += 1
+  if (evt.incremental) __atlas.incrementalHits += 1
+  if (evt.op && Object.prototype.hasOwnProperty.call(__atlas.queries, evt.op)) __atlas.queries[evt.op] += 1
+  if (evt.stale) __atlas.staleServed += 1
+  if (evt.injectBytes) __atlas.injectBytes += n(evt.injectBytes)
+  if (evt.error) __atlas.errors += 1
+}
+
+export function getAtlasStats() {
+  return { ...__atlas, queries: { ...__atlas.queries } }
+}
+
+export function resetAtlasStats() { __atlas = freshAtlasStats() }
 
 // ── 逐轮序号（resetInjectStats 是**进程级累计**，逐轮读会拿到累计值）─────────
 // 语义：seq 随每次轮末快照递增，调用方可据此判断"快照是否连续"（丢轮即断号）。

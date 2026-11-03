@@ -84,53 +84,70 @@ function isRawDeviceTarget(token) {
 // 扫描一段命令：先定位命令头部（跳过前缀 flag 与包装器），再按头部判定；
 // 头部是包装器时把参数里的内层命令展开（引号内空白在 tokenize 时被保留，
 // 这里按空白再切一次）后递归。
+//
+// 返回值是**命中族 id 或 null**（不是 boolean）：族 id 供 engine 做「同族重试硬拒」
+// （P0-3）——判定逻辑与词表只有这一份，避免"是否灾难"与"属哪一族"两处漂移。
 function scanSegment(segment, depth) {
   const tokens = tokenize(segment)
-  if (!tokens.length) return false
+  if (!tokens.length) return null
   let i = 0
   while (i < tokens.length) {
     const low = tokens[i].toLowerCase()
     if (/^-/.test(low)) { i++; continue }        // 前缀 flag（sudo -n / cmd /c 的 /c 走下面）
     if (/^\/[ck]$/i.test(low)) { i++; continue } // cmd /c、powershell /c
     if (WRAPPERS.has(low)) {
-      if (depth >= MAX_DEPTH) return false
+      if (depth >= MAX_DEPTH) return null
       const inner = tokens.slice(i + 1)
       // 引号包裹的整条命令会是一个含空白的 token → 按空白再切一次即为内层 token 序列
       const flat = inner.flatMap((t) => (/\s/.test(t) ? tokenize(t) : [t]))
-      return flat.length ? scanSegment(flat.join(' '), depth + 1) : false
+      return flat.length ? scanSegment(flat.join(' '), depth + 1) : null
     }
     break
   }
-  if (i >= tokens.length) return false
+  if (i >= tokens.length) return null
   const head = tokens[i].toLowerCase().replace(/\.exe$/, '')
   const rest = tokens.slice(i + 1)
-  if (DELETE_TOOLS.has(head)) return hasRecursiveFlag(rest) && rest.some(isRootOrHomeTarget)
-  if (head.startsWith('mkfs')) return true
+  if (DELETE_TOOLS.has(head)) {
+    return hasRecursiveFlag(rest) && rest.some(isRootOrHomeTarget) ? 'root-or-home-recursive-delete' : null
+  }
+  if (head.startsWith('mkfs')) return 'mkfs'
   // format 必须带盘符才算格式化（`npm run format`、`git format-patch` 不算）
   if (head === 'format' || head === 'format.com') {
-    return rest.some((t) => !/^-/.test(t) && /^[a-zA-Z]:/.test(t))
+    return rest.some((t) => !/^-/.test(t) && /^[a-zA-Z]:/.test(t)) ? 'format-partition' : null
   }
-  if (head === 'diskpart' || head === 'fdisk' || head === 'parted') return true
-  if (head === 'dd') return rest.some(isRawDeviceTarget)
+  if (head === 'diskpart' || head === 'fdisk' || head === 'parted') return 'format-partition'
+  if (head === 'dd') return rest.some(isRawDeviceTarget) ? 'dd-raw-device' : null
   if (POWER_TOOLS.has(head) || head === 'init') {
-    if (POWER_TOOLS.has(head)) return true
-    return rest.some((t) => t === '0' || t === '6') // init 0 / init 6（关机 / 重启）
+    if (POWER_TOOLS.has(head)) return 'power-control'
+    return rest.some((t) => t === '0' || t === '6') ? 'power-control' : null // init 0 / init 6（关机 / 重启）
   }
-  if (head === 'systemctl') return rest.some((t) => ['reboot', 'poweroff', 'halt', 'shutdown'].includes(t.toLowerCase()))
-  return false
+  if (head === 'systemctl') {
+    return rest.some((t) => ['reboot', 'poweroff', 'halt', 'shutdown'].includes(t.toLowerCase())) ? 'power-control' : null
+  }
+  return null
 }
 
-// true = 灾难级（任何档位都必须经过用户确认）
-export function matchesCatastrophic(command) {
-  if (!command || typeof command !== 'string') return false
+// 命中族 id（CATASTROPHIC_FAMILIES 之一）或 null。同一份判定，粒度更细。
+//
+// 用途（P0-3，2026-09-16）：engine 记录「本轮用户已拒绝过哪些族」，同族重试**不再弹窗**
+// 而是直接拒绝——抵挡"拒绝后改写/升权再试"（`rm -rf /` → `rm -rf /*` / `sudo rm -rf /`）。
+// 字面比对挡不住改写，故族粒度是这套拦截的必要条件。
+export function catastrophicFamily(command) {
+  if (!command || typeof command !== 'string') return null
   const raw = command.trim()
-  if (!raw) return false
+  if (!raw) return null
   const segments = raw.split(SHELL_SPLIT).slice(0, MAX_SEGMENTS)
   for (const seg of segments) {
     if (!seg.trim()) continue
     try {
-      if (scanSegment(seg, 0)) return true
+      const family = scanSegment(seg, 0)
+      if (family) return family
     } catch { /* 判定失败按"非灾难"处理，交由 highrisk/正常审批兜底 */ }
   }
-  return false
+  return null
+}
+
+// true = 灾难级（任何档位都必须经过用户确认）。与 catastrophicFamily 同判定，仅粒度不同。
+export function matchesCatastrophic(command) {
+  return catastrophicFamily(command) !== null
 }

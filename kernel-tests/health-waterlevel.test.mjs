@@ -107,5 +107,21 @@ test('兼容：旧格式 turnStats（无 lastUsage/compactCount）不报错、�
   const s = h.snapshotState()
   assert.equal(s.remainingPct, Math.round(100 - (50_000 / 160_000) * 100))
   assert.equal(s.tier, 'green')
-  assert.equal(events.length, 0, '绿档不发事件（首轮即绿不打扰）')
+  assert.equal(events.length, 1, '轮末必发一帧（2026-10-08 口径：绿档也发——旧语义下此处为 0，血条因此无数据）')
+  assert.equal(events[0].tier, 'green')
+})
+
+test('轮末节奏（2026-10-08 口径变更）：绿档每轮结束各发一帧，读数跟随最新轮', () => {
+  const events = []
+  const wire = { health: (d) => events.push(d) }
+  const h = createHealth({ wire, contextWindow: 200_000, env: {} })
+  // 症状回归：长窗配置下档位长期停在绿档 ⇒ 旧语义零帧（实测 1100+ 消息的会话 GUI 血条全死）。
+  h.record({ usage: { input_tokens: 50_000 }, lastUsage: { input_tokens: 50_000 }, compactCount: 0 })
+  h.record({ usage: { input_tokens: 60_000 }, lastUsage: { input_tokens: 60_000 }, compactCount: 0 })
+  assert.equal(events.length, 2, '每轮结束各发一帧（与档位是否变化无关）')
+  assert.equal(events[0].remainingPct, Math.round(100 - (50_000 / 160_000) * 100))
+  assert.equal(events[1].remainingPct, Math.round(100 - (60_000 / 160_000) * 100), '第二帧读第二轮的实时水位')
+  // 音量边界：只有"轮末"这一个固定节奏点 force；其余入口保持变化才发
+  h.recordFailure()
+  assert.equal(events.length, 2, 'recordFailure 不是轮末节奏：绿档不加发')
 })

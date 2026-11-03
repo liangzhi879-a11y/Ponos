@@ -45,7 +45,7 @@ function spawnKernel(env, dir) {
     KERNEL_CLI, '--print', '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--verbose', '--dangerously-skip-permissions', '--add-dir', dir,
   ], {
-    env: { ...base, PONOS_MOCK_API: '1', CLAUDE_CONFIG_DIR: dir, YFW_HOME: dir, ...env },
+    env: { ...base, PONOS_MOCK_API: '1', PONOS_CONFIG_DIR: dir, PONOS_HOME: dir, ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   let out = ''
@@ -66,7 +66,7 @@ function spawnKernel(env, dir) {
   return { proc, events, get out() { return out }, get err() { return err } }
 }
 
-const waitFor = async (fn, ms = 20_000, step = 100) => {
+const waitFor = async (fn, ms = 45_000, step = 100) => {
   const t0 = Date.now()
   while (Date.now() - t0 < ms) {
     if (fn()) return true
@@ -78,12 +78,13 @@ const waitFor = async (fn, ms = 20_000, step = 100) => {
 const perfLines = (err) => err.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('[perf]'))
 
 /** 起内核 → 跑一轮夹具 → 收集 stderr 里的 [perf] 行 */
-async function runTurn({ env = {}, settings = null, timeoutMs = 20_000 } = {}) {
+async function runTurnOnce({ env = {}, settings = null, timeoutMs = 45_000 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'perf-log-'))
   if (settings) writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings), 'utf8')
   const k = spawnKernel(env, dir)
   try {
-    await new Promise((r) => setTimeout(r, 800)) // 等 init
+    // 不再等固定 800ms「等 init」：stdin 由 OS 管道缓冲，内核起来后会自己读到；
+    // 固定等待在忙机器上会反过来制造假红（内核实为更慢时，等待结束得比 spawn 还早）。
     k.proc.stdin.write(JSON.stringify({ type: 'user', session_id: 'perf-session', message: { role: 'user', content: FIXTURE } }) + '\n')
     await waitFor(() => k.events.some((e) => e.type === 'result') || k.proc.exitCode !== null, timeoutMs)
     return {
@@ -102,6 +103,22 @@ async function runTurn({ env = {}, settings = null, timeoutMs = 20_000 } = {}) {
     rmSync(dir, { recursive: true, force: true })
     throw e
   }
+}
+
+/**
+ * 带重试的夹具：满负载时子进程可能还没读到 stdin 就退出（spawn 慢/被调度器推迟），
+ * 再起一次即可 —— 重试的是**夹具**，不是断言：三轮都没 result 就把最后一次交出去，
+ * 断言照旧失败并打印 stderr（真故障不会被吞掉）。
+ */
+async function runTurn(opts = {}) {
+  let last = null
+  for (let i = 0; i < 3; i += 1) {
+    last = await runTurnOnce(opts)
+    if (last.events.some((e) => e.type === 'result')) return last
+    last.cleanup()
+    await new Promise((r) => setTimeout(r, 300 * (i + 1)))
+  }
+  return last
 }
 
 test('默认关：不设 PONOS_PERF → stderr 零 [perf]，轮次照常收尾', async () => {

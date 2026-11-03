@@ -143,6 +143,41 @@ test('public 截断稳定顺序（I-2）：按 id 字节序取前 N（不受 loc
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+// 【2026-09-18 P0-4】工具池输出顺序与 updatedAt 解耦。
+// 病灶：orderPublics 的"最近编辑优先"是**截断优先级**（谁进池，产品语义），但先前它同时
+// 决定了工具数组的输出次序 ⇒ 任一工作流被编辑（updatedAt/保存时间变）就翻转 tools 次序，
+// 前缀缓存逐字节匹配 ⇒ tools 整段失效（实测代价见 docs/2026-09-18-前缀缓存命中率优化方案.md）。
+test('工具池输出顺序（P0-4）：按 id 稳定，编辑工作流不翻转次序；截断仍按最近优先', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wf-order-'))
+  const wfRoot = join(root, 'workflows')
+  // updateAt 顺序与 id 顺序**故意相反**：id 最小的最旧、id 最大的最新
+  const mk = (id, updatedAt) => {
+    mkdirSync(join(wfRoot, id), { recursive: true })
+    writeFileSync(join(wfRoot, id, 'workflow.yml'), `${wfYml(id, '  mode: public')}updatedAt: ${updatedAt}\n`, 'utf-8')
+  }
+  const engine = { run: async () => ({ ok: true, finalOutput: {} }) }
+  try {
+    mk('aaa-1', '2026-01-01T00:00:00Z')
+    mk('bbb-2', '2026-06-01T00:00:00Z')
+    mk('ccc-3', '2026-12-01T00:00:00Z')
+
+    // ① 输出顺序 = id 字节序（与 updatedAt 无关）
+    const t1 = buildWorkflowTools({ roots: [wfRoot], engine })
+    assert.deepEqual(Object.keys(t1), ['run_aaa_1', 'run_bbb_2', 'run_ccc_3'], `输出应按 id 稳定：${Object.keys(t1)}`)
+    // ② 钉死"不再按 updatedAt 降序输出"（旧实现会得到 ccc/bbb/aaa）
+    assert.notDeepEqual(Object.keys(t1), ['run_ccc_3', 'run_bbb_2', 'run_aaa_1'])
+
+    // ③ 编辑最旧的那个（updatedAt 变最新）⇒ 顺序必须不变，否则工具前缀整段失效
+    mk('aaa-1', '2027-01-01T00:00:00Z')
+    const t2 = buildWorkflowTools({ roots: [wfRoot], engine })
+    assert.deepEqual(Object.keys(t2), Object.keys(t1), '编辑任一工作流不得翻转工具顺序')
+
+    // ④ 截断优先级是产品语义，必须保留：最近编辑者优先入池
+    const t3 = buildWorkflowTools({ roots: [wfRoot], engine, publicLimit: 1 })
+    assert.deepEqual(Object.keys(t3), ['run_aaa_1'], 'publicLimit 截断仍按"最近编辑优先"')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
 test('提示词清单可见性口径（I-3）：private / 未命中 bound / 超限 public 不出现在清单', () => {
   const { wfRoot, cleanup } = setup()
   const engine = { run: async () => ({ ok: true, finalOutput: {} }) }

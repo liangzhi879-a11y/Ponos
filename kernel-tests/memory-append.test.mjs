@@ -19,7 +19,7 @@
 //      从未存在（S5 的 `--doc`/`--related` 就是这么静默失效的），而单测直调
 //      `runKnowledgeCommand` 会绕过这一层管道，完全抓不到。
 //
-// 隔离：mkdtempSync + PONOS_HOME，并清 CLAUDE_CONFIG_DIR（宿主若设了它，真进程会读真实库）。
+// 隔离：mkdtempSync + PONOS_HOME，并清 PONOS_CONFIG_DIR（宿主若设了它，真进程会读真实库）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -27,7 +27,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { validateAppendEntry, listMemoryTags, memoryRoot } from '../kernel/memory.mjs'
+import { validateAppendEntry, listMemoryTags, memoryRoot, appendMemoryEntry, readMemoryEntries } from '../kernel/memory.mjs'
+import { ENTRY_LINE_RE } from '../shared/knowledge-core.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const CLI = join(ROOT, 'kernel', 'cli.mjs')
@@ -47,7 +48,7 @@ after(() => { for (const d of tmpDirs) { try { rmSync(d, { recursive: true, forc
 /** 真进程跑 `--knowledge <args>`；返回 `{code, stdout, stderr, env}` */
 function runCli(dir, args) {
   const env = { ...process.env, PONOS_HOME: dir }
-  delete env.CLAUDE_CONFIG_DIR
+  delete env.PONOS_CONFIG_DIR
   const r = spawnSync(process.execPath, [CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', ...args], {
     env, encoding: 'utf8', timeout: 60_000,
   })
@@ -178,7 +179,7 @@ test('`--text -` 从 stdin 逐字读入（多行含 | 与反引号不被 shell �
   const dir = fixture()
   const text = '多行经验：第一行说明背景\n第二行含 | 竖线与 `code` 反引号，经 stdin 应逐字保留'
   const env = { ...process.env, PONOS_HOME: dir }
-  delete env.CLAUDE_CONFIG_DIR
+  delete env.PONOS_CONFIG_DIR
   const r = spawnSync(process.execPath, [CLI, '--output-format', 'stream-json', '--input-format', 'stream-json',
     '--knowledge', 'append', '--tag', 'stdin通道', '--text', '-'], {
     env, encoding: 'utf8', timeout: 60_000, input: text,
@@ -197,4 +198,42 @@ test('configDir 不存在时拒绝写入（防拼错的根静默长出整棵树�
   assert.equal(r.code, 1)
   assert.equal(JSON.parse(r.stdout).error, 'bad-root')
   assert.ok(!existsSync(ghost), '不该创建出这棵根')
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2026-09-30（通路核查驱动）两条**读写口径**回归 —— 都是"结构对了但语义错了"的静默缺陷：
+//   ① 条目判定用 `startsWith('- ')` 而非 `ENTRY_LINE_RE` ⇒ 条目**正文里的子项目符号**被当独立条目
+//      （实测 workflow 索引虚高 18 条：765 vs 真实 747；且那些无结构片段会被 buildRelevantMemory
+//       当"经验"注入 —— 与注入 header 声明的 `-[主题|标签] 摘要 -- 全文` 格式不符）
+//   ② 写入侧 summary/full 按"首行 60 字"截断，而读侧按**首个 ` -- `** 切 ⇒ 调用约定
+//      `--text "<摘要> -- <全文>"` 下摘要与全文**各出现两次**、summary 截断在句中、full 前缀被污染
+// ═══════════════════════════════════════════════════════════════════════════════
+test('条目判定必须用 ENTRY_LINE_RE：条目正文里的子项目符号不得被当成条目', () => {
+  const dir = fixture()
+  const root = memoryRoot(dir)
+  // 一条正常条目，其 full 里含子项目符号（真实库就是这么写的：正文里嵌"问题/选择"清单）
+  appendMemoryEntry({
+    root, theme: 'demo', tag: 't',
+    summary: '摘要内容足够长以通过最小长度校验',
+    full: '全文内容同样需要足够长以通过最小长度校验的要求\n- 问题 "选项？": 选择了 "A"\n- 问题 "另一个？": 选择了 "B"',
+  })
+  const entries = readMemoryEntries({ root, theme: 'demo' })
+  assert.equal(entries.length, 1,
+    `★ 含子项目符号的正文只能算**一条**条目（实际 ${entries.length}）—— 用 startsWith('- ') 会把续行也当条目`)
+  // 反向：续行本身**不匹配** ENTRY_LINE_RE（钉住判据本身，而不只是计数）
+  assert.equal(ENTRY_LINE_RE.test('- 问题 "x": 选择了 "A"'), false, '续行不得匹配条目正则')
+  assert.equal(ENTRY_LINE_RE.test('- [会话|标签] 摘要 -- 全文'), true, '真条目必须匹配条目正则')
+})
+
+test('写入按首个 -- 切：summary/full 与写入意图逐字一致（不得重复、不得截断在句中）', () => {
+  const dir = fixture()
+  const root = memoryRoot(dir)
+  const summary = '摘要句：这是一条足够长以通过最小长度校验的摘要'
+  const full = '全文句：这是同样足够长的全文内容，且内部还含第二个分隔符 -- 尾段。'
+  appendMemoryEntry({ root, theme: 'demo', tag: 't', summary, full })
+  const [e] = readMemoryEntries({ root, theme: 'demo' })
+  assert.equal(e.summary, summary, '★ summary 必须与写入意图逐字一致（不得变成"整段前 60 字"）')
+  assert.equal(e.full, full, '★ full 必须与写入意图逐字一致（不得以摘要前缀污染）')
+  // 存储形态：一行里摘要只出现一次（重复会让存储膨胀并误导模型）
+  assert.equal(e.text.split(summary).length - 1, 1, `摘要在一行里只应出现 1 次（实际 ${e.text.split(summary).length - 1}）`)
 })

@@ -6,8 +6,8 @@
 // 往返钉死；算法内部漂移由 shared/ 与 kernel-tests/knowledge-*.test.mjs 覆盖。
 //
 // 隔离：子进程经 PONOS_HOME 指向 mkdtempSync 临时目录（resolveConfigDir 优先级：
-// CLAUDE_CONFIG_DIR → PONOS_HOME → ~/.ponos）；CLAUDE_CONFIG_DIR 显式置空以免外部干扰。
-// 绝不触碰真实 ~/.yfworking / ~/.yfw；不起 bridge。
+// PONOS_CONFIG_DIR → PONOS_HOME → ~/.ponos）；PONOS_CONFIG_DIR 显式置空以免外部干扰。
+// 绝不触碰真实 ~/.ponos / ~/.ponos；不起 bridge。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
@@ -38,13 +38,13 @@ function fixture() {
 }
 
 function runCli(dir, argsList) {
-  // 必须带 stream-json 两个标志：`--knowledge` 短路块位于 cli.mjs 的格式校验之后，
-  // 缺标志会以 `kernel: only stream-json I/O format is supported` 退出。
-  // 这也正是 server 侧 kernelReadonly 的实际调用形状（server/kernel-readonly.mjs:41）。
+  // 带 stream-json 两个标志是为了与 server 侧 kernelReadonly 的**实际调用形状**一致
+  // （server/kernel-readonly.mjs:41）。CLI 侧自 2026-10-21 起对一次性子命令**不再要求**
+  // 它们（格式门禁已下移到 loop 入口）；「裸调用也可用」由 cli-subcommands.test.mjs 钉住。
   const out = execFileSync(process.execPath, [
     CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', '--knowledge', ...argsList,
   ], {
-    env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
+    env: { ...process.env, PONOS_HOME: dir, PONOS_CONFIG_DIR: '' },
     encoding: 'utf-8',
     timeout: 60000,
   })
@@ -56,7 +56,7 @@ function runCliRaw(dir, argsList) {
   return execFileSync(process.execPath, [
     CLI, '--output-format', 'stream-json', '--input-format', 'stream-json', '--knowledge', ...argsList,
   ], {
-    env: { ...process.env, PONOS_HOME: dir, CLAUDE_CONFIG_DIR: '' },
+    env: { ...process.env, PONOS_HOME: dir, PONOS_CONFIG_DIR: '' },
     encoding: 'utf-8',
     timeout: 60000,
   })

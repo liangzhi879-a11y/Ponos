@@ -47,7 +47,9 @@ function makeEnv() {
     }
     return null
   }
-  return { events, engine, store, dir, laneFile, waitNotif, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return { events, engine, store, dir, laneFile, waitNotif, // ★ 2026-10-18：加 maxRetries/retryDelay。Windows 上刚写入的文件可能被短暂占用，
+  //   rmSync 会抛 EPERM —— 那是平台特性而非本测试的断言问题（SESS-08 新增 subagents/ 登记后暴露）。
+  cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 }
 
 // —— agents.mjs ——
@@ -95,7 +97,7 @@ test('resolveAgents：内置 ∪ 扫描合并；用户级同名覆盖内置；�
     assert.equal(gp.systemPrompt, 'custom body')
     // 目录不存在容错
     assert.equal(resolveAgents({ configDir: join(dir, 'nope') }).length, BUILTIN_AGENTS.length)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 })
 
 test('discoverUserAgents：多 agent 扫描（含新增业务 agent）', () => {
@@ -106,7 +108,7 @@ test('discoverUserAgents：多 agent 扫描（含新增业务 agent）', () => {
     writeFileSync(join(dir, 'agents', 'b.md'), '---\nname: "beta"\ndescription: "B 代理"\ntools: Grep, Read\n---\nbody b\n')
     const list = discoverUserAgents({ configDir: dir })
     assert.deepEqual(list.map((a) => a.id).sort(), ['alpha', 'beta'])
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 })
 
 test('resolveAgent：按 id/name 查找；未知类型 → null', () => {
@@ -380,4 +382,178 @@ test('S3 outputs：子 agent Write 产物路径全部进 task_notification.outpu
     else process.env.PONOS_MOCK_WRITE_DIR = prev
     env.cleanup()
   }
+})
+
+// ===== 跨 Agent 证据面（Task 1/2/3）=====
+// ---------------------------------------------------------------------------
+// 覆盖「跨 Agent 证据面」系列任务的用例：Task 1 = Edit 产物计入 outputs；
+// Task 2 = reads 采集 + 产物/过程入口回传；Task 3 = lane transcript 可被 Read 展开。
+// 三个任务均已在下方落地（Task 3 用例同时守住"只放行精确文件、不放宽目录"）。
+// 为什么不另建 subagent-evidence.test.mjs：仓库门禁 doc-anchors-reproducible 会校验
+// docs/_anchors.json 中的 testFileCounts（kernel-tests/*.test.mjs 计数），新增测试文件
+// 即触发锚点失配；并入既有文件可零接触 docs/。
+//
+// 本地需要**独立于会话目录的 configDir 布局**（transcript 落在会话目录之外，越界/放行才有区分度）。
+// ——参见下方 makeEnvEvidence 注释。
+
+// 与上方 makeEnv 的关键差异：**configDir 不在 addDirs 内**。
+// 这样 lane transcript（<configDir>/projects/<cwd>/<taskId>.jsonl）落在会话目录之外，
+// "未放行 ⇒ 越界 / 放行 ⇒ 可读"才有区分度（若 configDir 在会话目录内，测试恒通过、测不出东西）。
+// 对照既有 makeEnv（约 :27-48）—— 它是 dir = mkdtempSync(...)；configDir = join(dir,'home')；
+// cwd: dir；addDirs: [dir] ⇒ laneFile 落在 dir/home/... ，**本就在 addDirs 内**，故既有测试
+// 无法验证跨出边界的情形。本用例必须分离 work / home 两个目录，这是不能照抄它的原因。
+function makeEnvEvidence() {
+  const events = []
+  const wire = makeWire({ write(s) { events.push(JSON.parse(s)) } })
+  const root = mkdtempSync(join(tmpdir(), 'ponos-evidence-'))
+  const workDir = join(root, 'work')
+  const configDir = join(root, 'home')
+  mkdirSync(workDir, { recursive: true })
+  const store = createSessionStore({ configDir, cwd: workDir, sessionId: 'main-session' })
+  const engine = createEngine({
+    opts: { model: 'mock-model', configDir, addDirs: [workDir], skipPermissions: true },
+    wire,
+    session: store,
+  })
+  engine.setSystemPrompt('你是 Ponos-turbo 测试内核。')
+  const laneFile = (taskId) => join(configDir, 'projects', workDir.replace(/[^a-zA-Z0-9]/g, '-'), `${taskId}.jsonl`)
+  const waitNotif = async (taskId, timeoutMs = 8000, nth = 1) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const ns = events.filter((e) => e.type === 'system' && e.subtype === 'task_notification' && e.task_id === taskId)
+      if (ns.length >= nth) return ns[nth - 1]
+      await sleep(10)
+    }
+    return null
+  }
+  return { events, engine, store, root, workDir, configDir, laneFile, waitNotif, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+test('Edit 产物计入 outputs（原先只认 Write）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    // Edit 需要目标文件已存在（Edit 是"先读后改"，old_string 必须精确命中）
+    writeFileSync(join(env.workDir, 'mock-c.txt'), 'old\n', 'utf-8')
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:edit]', run_in_background: true },
+      { toolUseId: 'tool_use_ev_1' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n, '完成通知应到达')
+    // Edit 的目标文件必须进 outputs（改造前恒为空数组）
+    assert.deepEqual(n.outputs, [`${env.workDir}/mock-c.txt`])
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
+
+test('Read 路径进 reads 且主 Agent 前台回传含完整产物与过程入口', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    writeFileSync(join(env.workDir, 'mock-c.txt'), 'old\n', 'utf-8')
+    // desc 含 [mock:edit] 但不以它开头：确保子 Agent 首轮就命中触发词
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:edit] 请改这个文件', run_in_background: true },
+      { toolUseId: 'tool_use_ev_2' },
+    )
+    const taskId = extractTaskId(r.content)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n)
+    // reads 采集：Read 的 file_path 进通知
+    assert.deepEqual(n.reads, [`${env.workDir}/mock-c.txt`])
+    // transcript 路径暴露（Task 3 使其可读）
+    assert.equal(n.transcript_path, env.laneFile(taskId))
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
+
+test('前台 Agent 返回体列出全部产物（不止最后一个）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:write]' }, // 无 run_in_background ⇒ 前台同步
+      { toolUseId: 'tool_use_ev_3' },
+    )
+    assert.equal(r.isError, false)
+    // 两个产物都要出现（改造前只出现最后一个）
+    assert.match(r.content, /mock-a\.txt/)
+    assert.match(r.content, /mock-b\.txt/)
+    // 产物清单段与过程入口段为本次新增。不能只断路径出现：mock 的工具结果回显
+    // 本身就带 mock-a.txt、output_file 单行带 mock-b.txt，路径断言在改造前也过。
+    assert.match(r.content, /产物（2）：/)
+    assert.match(r.content, /过程记录：/)
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
+
+test('output_file 仍为"最后写入产物"，去重只作用于 outputs（Write A→Write B→Edit A）', async () => {
+  const env = makeEnvEvidence()
+  const prev = process.env.PONOS_MOCK_WRITE_DIR
+  try {
+    process.env.PONOS_MOCK_WRITE_DIR = env.workDir
+    // [mock:write-edit-write] 一轮内：Write A → Write B → Edit A ⇒ 原始 writePaths = [A, B, A]
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: '[mock:write-edit-write]', run_in_background: true },
+      { toolUseId: 'tool_use_ev_5' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    const n = await env.waitNotif(taskId)
+    assert.ok(n, '完成通知应到达')
+    // ① output_file 语义 = "该 lane 最近写入/修改的文件" ⇒ 取**原始** writePaths 末元素 = A。
+    //    若误取去重数组末元素（outputs = [A, B]），这里会是 mock-b.txt —— 本断言即为此而设。
+    assert.equal(n.output_file, `${env.workDir}/mock-a.txt`, 'output_file 应为最后被写/改的 A，而非去重后末元素 B')
+    // ② 新增字段 outputs 为保序去重：[A, B]（第二次写 A 折叠），顺序与原出现顺序一致
+    assert.deepEqual(n.outputs, [`${env.workDir}/mock-a.txt`, `${env.workDir}/mock-b.txt`])
+  } finally {
+    if (prev === undefined) delete process.env.PONOS_MOCK_WRITE_DIR
+    else process.env.PONOS_MOCK_WRITE_DIR = prev
+    env.cleanup()
+  }
+})
+
+test('lane transcript 可被主 Agent 用 Read 展开（落盘在会话目录之外）', async () => {
+  const env = makeEnvEvidence()
+  try {
+    const marker = '证据面可读性标记文本'
+    const r = await env.engine.spawnSubAgent(
+      { subagent_type: 'general-purpose', prompt: marker, run_in_background: true },
+      { toolUseId: 'tool_use_ev_4' },
+    )
+    const taskId = extractTaskId(r.content)
+    assert.ok(taskId)
+    await env.waitNotif(taskId)
+    const lanePath = env.laneFile(taskId)
+    // 前置事实：该文件确实落在会话目录之外（否则本测试恒通过、测不出放行效果）
+    assert.ok(!lanePath.startsWith(env.workDir), 'lane transcript 必须在 addDirs 之外')
+    // 直调注册表里的 Read 条目。注意 registry 的形态是 { Read: { run(input) }, ... }
+    // （tools.mjs 的 Read.run: readFile(path, readAllowDirs, input, cwd, readCache, skipBoundary, readAllowFilesSet)），
+    // Read.run 只需 input、不需要 ctx。入口是 engine.tools.registry.Read——engine 暴露的
+    // tools 是 createToolRegistry 的**外层包装**（{ registry, toolNames, run, ... }），
+    // 工具条目挂在 registry 下（同既有先例 kernel-tests/read-memory-boundary.test.mjs:86）。
+    const rr = env.engine.tools.registry.Read.run({ file_path: lanePath })
+    assert.notEqual(rr.isError, true, `Read lane transcript 不应被边界拒绝：${String(rr.content).slice(0, 200)}`)
+    assert.match(String(rr.content), new RegExp(marker), 'Read 结果应含 lane 内的任务文本')
+    // 放行须是**逐文件精确匹配**、不是放宽目录：同目录（<configDir>/projects/<cwd>/）的
+    // 邻文件仍要被拒——否则"登记一条 lane 路径"就等于整棵 projects 树开读，那才是真的扩大化。
+    const sibling = join(env.configDir, 'projects', env.workDir.replace(/[^a-zA-Z0-9]/g, '-'), 'sibling-transcript.jsonl')
+    writeFileSync(sibling, '{"note":"非白名单邻文件"}\n', 'utf-8')
+    assert.equal(env.engine.tools.registry.Read.run({ file_path: sibling }).isError, true, '同目录邻文件不得因 lane 放行而可读')
+  } finally { env.cleanup() }
 })

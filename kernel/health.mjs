@@ -68,7 +68,11 @@ export function shouldJudge({ tier, judgeEnabled = false, lastJudgeAt = 0, now =
   return now - lastJudgeAt >= cooldownMs
 }
 
-export function createHealth({ wire, model = '', contextWindow = 200_000, env = process.env, getAnchorSource } = {}) {
+/**
+ * 装配 health 状态机（血条/档位/失真轴）。
+ * @param {{ wire?: any, model?: string, contextWindow?: number, env?: any, getAnchorSource?: any, buildSnapshot?: any }} [opts]
+ */
+export function createHealth({ wire, model = '', contextWindow = 200_000, env = process.env, getAnchorSource, buildSnapshot } = {}) {
   // H3：窗口可变——compactor 经 400 溢出采纳端点真实窗口（adoptWindow）后同步过来，
   // 否则 health 仍按虚高配置窗口测水位，系统性低估压力（256K 配置 vs 131K 真实时
   // 压缩已触发、health 却显示充足）。
@@ -89,12 +93,16 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     seedCount(env.YFW_HEALTH_COMPACT_COUNT),
   )
   let lastSummary = ''
-  // 初始即绿：green 档不发 ponos_health（首轮即绿不打扰；档位转黄/红时才通知）
+  // 初始即绿 + 轮末每轮必发（2026-10-08 口径变更）：record() 一律 force 发帧，GUI 血条
+  // 由此获得实时水位读数；旧语义"green 档不发、档位变化才发"在长窗口配置（实测
+  // PONOS_AUTO_COMPACT_WINDOW=1M ⇒ 800K 基准）下档位长期停在绿档 ⇒ 血条永久无数据
+  // （实测 1100+ 消息的会话零 ponos_health 帧）。lastTier 仍记录已发档位——其余
+  // 非轮末入口（recordFailure/失真轴/压缩审计）保持"变化才发"，靠它与失真档差分。
   let lastTier = 'green'
   let lastJudgeAt = 0
   const recent = [] // 近 10 轮 turnStats
   const failures = { count: 0 }
-  const judgeEnabled = env.PONOS_LLM_JUDGE === '1' || env.CLAUDE_CODE_LLM_JUDGE === '1'
+  const judgeEnabled = env.PONOS_LLM_JUDGE === '1'
   // J1：Judge 结论暂存——仅随 force 发（recordJudge → emitIfChanged(true)）的
   // ponos_health 一次性带出（judge 字段；发完即清，不残留到后续事件）
   let pendingJudge = null
@@ -103,6 +111,12 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
   const fidEnabled = fidCfg.enabled !== false
   const fid = createFidelity({ config: fidCfg, getAnchorSource })
   let lastDistortionTier = 'green'
+  // 会话健康快照 provider（2026-09-23 spec §5.1；契约 §4.4）：**可选**、**晚绑定**。
+  // 为什么需要晚绑定：health 实例在 cli.mjs 装配期创建，而快照的 cost/guard 两段来源在
+  //   engine 的闭包里（`sessionUsageAcc`/`turnStats`），engine 又在 health **之后**创建
+  //   ⇒ 只能事后注入（`setSnapshotProvider`）。构造参数 `buildSnapshot` 供直连/测试用。
+  // 语义：provider 是**只读者**——不参与 changed 判定、返回值只挂在帧上（搭车字段）。
+  let snapshotProvider = typeof buildSnapshot === 'function' ? buildSnapshot : null
 
   function snapshot() {
     // 剩余水位：最近一次"单请求"完整规模（lastUsage，含缓存字段）相对
@@ -142,6 +156,12 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     }
     return {
       ...h,
+      // 水位基准（= 上面 remainingPct 的**分母**）：对外暴露的**唯一**理由是可排障——只报
+      // "剩 40%" 而不给基准，看的人无法判断分母是 160K 还是 104K（窗口被 adoptWindow 下调后
+      // 两者差别很大）。与 remainingPct **同源**（同一个 ceiling，不在此处另算一遍）。
+      // `ceiling <= 0` 即无有效窗口（win 被钳为 0 的那条退化路径，与上面 remainingPct 的
+      // `ceiling > 0 ? … : 100` 是同一个判据）⇒ 如实 null（缺项不填 0）。
+      attentionCeiling: ceiling > 0 ? ceiling : null,
       growthPerTurn: pred.growthPerTurn,
       predictedTurns: pred.predictedTurns,
       // 失真档：与压力档并列，互不影响（anchorText 仅在 red 时生成，避免每次事件带 4KB 文本）
@@ -164,9 +184,21 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
       const distortion = distTier === 'red'
         ? h.distortion
         : { score: h.distortion.score, tier: distTier, axes: h.distortion.axes, issues: h.distortion.issues, trigger: h.distortion.trigger, observeUntilTurn: h.distortion.observeUntilTurn, anchorAvailable: h.distortion.anchorAvailable }
-      wire.health?.({ ...base, distortion, ...(pendingJudge ? { judge: pendingJudge } : {}) })
+      wire.health?.({ ...base, distortion, ...snapshotField(), ...(pendingJudge ? { judge: pendingJudge } : {}) })
     }
     if (force) pendingJudge = null // force 发完即清：judge 只随当次事件带出
+  }
+
+  // 快照**捎带**字段（契约 §4.4）：只在**真的要发帧**时求值（不参与 changed 判定 ⇒ 不产生新帧、
+  // 不为档位未变的轮次买单）；无 provider / provider 抛错 ⇒ 返回 `{}`（该次**省略**该键，
+  // **不是**输出 `null`：老内核/老 GUI 逐字兼容，且"不输出半个快照"）。
+  // ★ provider 抛错必须吞掉：观测失败不得升级为功能失败（否则加了观测反而让健康上报变脆弱）。
+  function snapshotField() {
+    if (!snapshotProvider) return {}
+    try {
+      const snap = snapshotProvider()
+      return snap ? { snapshot: snap } : {}
+    } catch { return {} }
   }
 
   return {
@@ -175,7 +207,12 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
         recent.push(turnStats)
         if (recent.length > 10) recent.shift()
         if (turnStats.compactCount > compactCount) compactCount = turnStats.compactCount
-        emitIfChanged()
+        // 2026-10-08 口径：**每轮结束必发一帧**（force）。旧语义"档位变化才发、初始即绿
+        // 不发"在长窗口配置下档位长期停在绿档 ⇒ GUI 血条永久无数据（实测 1100+ 消息的
+        // 会话零 ponos_health 帧）。轮末是唯一的固定节奏点，force 后绿档轮次也逐轮刷新
+        // 读数（帧体数百字节）；其余入口（recordFailure/失真轴/压缩审计）保持"变化才发"
+        // —— 它们不是轮末节奏，不该改变已定的音量。
+        emitIfChanged(true)
       } catch { /* 静默降级 */ }
     },
     recordCompaction(summary, count) {
@@ -203,6 +240,9 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
       } catch { /* 静默降级 */ }
     },
     // J1：Judge 结论暂存 + 强制带出（done/reason 进 wire.health.judge，一次性）
+    /**
+     * @param {{ done?: any, reason?: any }} [opts]
+     */
     recordJudge({ done, reason } = {}) {
       try {
         pendingJudge = { done: done === true, reason: String(reason || '') }
@@ -212,6 +252,13 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     snapshotState() {
       try { return snapshot() } catch { return null }
     },
+    // 快照 provider 的**晚绑定**注入位（2026-09-23 spec §5.1）：engine 在 health 之后创建，
+    // 而 cost/guard 两段的真源在 engine 的闭包里 ⇒ 由 engine 在装配时注入自己的读取闭包。
+    // 传非函数（含 null）等同"撤回注入"⇒ 帧里不再出现 `snapshot` 键（逐字回旧行为，不报错）。
+    setSnapshotProvider(fn) { snapshotProvider = typeof fn === 'function' ? fn : null },
+    // 主动重估（幂等）：非强制时仅在档位变化时发帧。既有 7 处内部调用点不变，此处只是把闭包
+    // 暴露给调用方/测试——"发不发生帧"的判据仍**只在**上面一处（不得由调用方旁路）。
+    emitIfChanged,
     // ---- 失真轴（2026-09-12 spec §6.2）：三个入口，均静默降级 ----
     // 引擎轮尾喂"内容侧观测"：本轮 user/assistant 文本 + 工具结果摘要
     recordTurnContent(input) {
@@ -243,7 +290,32 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
     fidelityEvidence() {
       try { return fid.evidenceLog() } catch { return { active: [], resolved: [] } }
     },
+    // 失真红线锚点（2026-09-15 闭环）：tier=red 时把"已丢失什么"的锚点文本与证据 id
+    // 交给 engine 注入请求面尾部——此前 anchorText 只进 ponos_health 事件发 GUI，等
+    // 用户点"重新锚定"回传 anchor_applied 才 markResolved，**内核从不注入模型上下文**，
+    // 检测等于只报警不处置。只读：不改变任何证据状态（置 resolved 仍只走
+    // markFidelityResolved，保持 GUI 回传为唯一人工确认路径）。
+    fidelityAnchor() {
+      try {
+        if (!fidEnabled) return null
+        const s = fid.snapshot()
+        if (!s || !s.anchorAvailable || !s.anchorText) return null
+        const ids = (Array.isArray(s.issues) ? s.issues : []).map((i) => i && i.id).filter(Boolean)
+        return { text: String(s.anchorText), ids }
+      } catch { return null }
+    },
     fidelityEnabled() { return fidEnabled },
+    // 锚点**确实注入到请求面**时由 engine 回调（2026-09-16 断反馈环）：把锚点原文交给
+    // fidelity，使"注入锚点的那一轮中复述锚点权威值"的事实不计入矛盾对——否则锚点自己
+    // 要求的复述会被判成模型自相矛盾，抬高失真分、延长窗口、招致更多锚定（自维持反馈环）。
+    // 与 fidelityAnchor 的分工：那个是"读锚点"，这个是"报告已注入"（只写一个受值约束的
+    // 标记，**不改变任何证据的 resolved 状态**，人工确认路径仍只走 markFidelityResolved）。
+    markFidelityAnchorInjected(text) {
+      try {
+        if (!fidEnabled) return 0
+        return fid.markAnchorInjected(text)
+      } catch { return 0 }
+    },
     // H3：真实窗口同步（compactor.adoptWindow 采纳端点 max_model_len 后调用，只下调
     // 场景）。同步后水位/预测立即按真实窗口重估。
     setWindow(w) {
@@ -256,8 +328,11 @@ export function createHealth({ wire, model = '', contextWindow = 200_000, env = 
   }
 }
 
-// O2-1 运维健康归一：输入由调用方采集（内核测自身进程，bridge 测全局会话）。
-// 纯函数保证可测性——采集与展示分离。
+/**
+ * O2-1 运维健康归一：输入由调用方采集（内核测自身进程，bridge 测全局会话）。
+ * 纯函数保证可测性——采集与展示分离。
+ * @param {{ memory?: { rss?: number, heapUsed?: number }, lastApi?: { ok?: any, ms?: any }, pendingTurns?: number, diskBytes?: number }} [opts]
+ */
 export function getOpsHealth({ memory = {}, lastApi = {}, pendingTurns = 0, diskBytes = 0 } = {}) {
   return {
     rssMB: Math.round((memory.rss || 0) / 1024 / 1024),

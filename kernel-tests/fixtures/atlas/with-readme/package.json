@@ -1,0 +1,9 @@
+{
+  "name": "readme-fixture",
+  "version": "0.0.0",
+  "description": "示例包：提供 lib 与 tool 两个入口",
+  "main": "lib.mjs",
+  "bin": {
+    "readme-tool": "tool.mjs"
+  }
+}

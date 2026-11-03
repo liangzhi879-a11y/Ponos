@@ -1,5 +1,5 @@
 // kernel-tests/knowledge-inject.test.mjs —— S3 Task 2：统一知识注入（索引层 + 抽调层）
-// 隔离纪律：一律 mkdtempSync + 显式 configDir（绝不碰真实 ~/.yfworking）。
+// 隔离纪律：一律 mkdtempSync + 显式 configDir（绝不碰真实 ~/.ponos）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs'
@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   buildKnowledgeInjection, resolveInjectMode, resolveInjectBudget,
-  getInjectStats, resetInjectStats,
+  getInjectStats, resetInjectStats, resolveRecallChars,
 } from '../kernel/knowledge-inject.mjs'
+import { resolveBudget } from '../kernel/memory-rank.mjs'
 import { buildMemoryIndex, appendMemoryEntry } from '../kernel/memory.mjs'
 import { createKnowledgeStore } from '../kernel/knowledge.mjs'
 
@@ -125,10 +126,11 @@ test('unified：两层合计不超总预算（含让渡：索引层小 → 抽�
         query: '四表联动 企微CLI化 沟通渠道 申报材料', keywords: KW, mode: 'unified', totalBudget: budget,
       })
       const used = Buffer.byteLength(r.indexSection, 'utf-8') + Buffer.byteLength(r.recallSection, 'utf-8')
-      // 口径说明：预算按**字节**计量（新代码如实），而索引层复用的 buildMemoryIndex 内部按
-      // **字符数**比较 maxBytes（既有约定，不动 = 零回归）。极小预算下索引层的固定串头
-      // （约 400 字节）自身就可能超限——此时抽调层必须为空（本函数把它置 0），
-      // 故断言上界取 max(budget, 索引层单层字节)。
+      // 口径说明（S4.5③④ 后已更新）：索引层自 Task 6 起是 **EL0 主题清单**（每主题一行，
+      // 真实库 ~368 B），且其内部预算比较也改为**按字节**（memoryBytes，Task 5）——
+      // 原注释"复用的 buildMemoryIndex 内部按字符数比较 maxBytes（既有约定，不动 = 零回归）"
+      // 已不成立，故此处按新形态核对：EL0 很小 ⇒ 极小预算下索引层一般仍装得下；
+      // 只有"索引层自身就超预算"时才要求抽调层为空。
       const indexOnly = Buffer.byteLength(buildMemoryIndex({ root, maxBytes: budget }), 'utf-8')
       assert.ok(used <= Math.max(budget, indexOnly), `预算 ${budget} 超限（实际 ${used}）`)
       if (indexOnly > budget) assert.equal(r.recallSection, '', '索引层自身超限时抽调层必须为空')
@@ -240,8 +242,13 @@ test('注入内容不含真实 home 路径（隔离纪律）', () => {
       configDir: dir, memoryRootDir: join(dir, 'memory', 'personal'),
       query: '四表联动', keywords: KW, mode: 'unified',
     })
-    assert.ok(r.indexSection.includes(dir), '索引层路径应指向临时目录')
-    assert.ok(!/\.yfworking|\.yfw[/\\]/.test(r.indexSection + r.recallSection), '不得出现真实 home 路径')
+    // 【S4.5④-1 EL0 化后改写】原断言是 `r.indexSection.includes(dir)`（"索引层路径应指向临时目录"）——
+    // EL0 主题清单**不再含任何文件路径**（每行的 `· <绝对路径>` 已裁掉，那正是 −4877 B/轮 的来源），
+    // 该断言已不可能成立。隔离意图因此改成**更强的**判据：注入里根本不出现绝对路径。
+    assert.ok(!r.indexSection.includes(dir), 'EL0 不得回显记忆根路径（路径已裁掉）')
+    assert.ok(!/[A-Za-z]:[\\/]/.test(r.indexSection), 'EL0 不得含 Windows 绝对路径')
+    assert.ok(r.indexSection.includes('【个人经验索引】'), '经验层仍在（只是变成主题清单形态）')
+    assert.ok(!/\.ponos|\.yfw[/\\]/.test(r.indexSection + r.recallSection), '不得出现真实 home 路径')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -363,4 +370,39 @@ test('S3：指标落盘失败不影响注入（磁盘只读/目录被占）', ()
     })
     assert.equal(typeof r.indexSection, 'string')
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── T1.3（2026-10-20）：legacy 抽调层的预算内上限 ─────────────────────────────
+// 问题：graph.search 此前用默认 maxChars=2,048 字符（中文 ≈6 KB），**整个在预算之外**
+// ⇒ "索引层省下的 4 KB"会被它悄悄吃掉，PONOS_KNOWLEDGE_INJECT_MAX_BYTES 形同虚设。
+
+test('★ T1.3 resolveRecallChars：剩余预算折算成字符，绝不超过总预算', () => {
+  // 总预算 4096 B，已用 1000 B ⇒ 剩 3096 B ⇒ 1000 字符（/3 保守折算）
+  assert.equal(resolveRecallChars({ totalBytes: 4096, usedBytes: 1000 }), 1032)
+  // 剩余 ≤0 ⇒ 0（调用方据此**跳过**抽调，不硬塞）
+  assert.equal(resolveRecallChars({ totalBytes: 4096, usedBytes: 4096 }), 0, '★ 预算用完就必须给 0')
+  assert.equal(resolveRecallChars({ totalBytes: 4096, usedBytes: 9999 }), 0, '★ 超支同样给 0（不得出现负数）')
+  // 非法/缺失 ⇒ 0（不猜；调用方跳过）
+  assert.equal(resolveRecallChars({}), 0)
+  assert.equal(resolveRecallChars({ totalBytes: 0 }), 0)
+  assert.equal(resolveRecallChars({ totalBytes: -1 }), 0)
+  assert.equal(resolveRecallChars({ totalBytes: Number.NaN }), 0)
+})
+
+test('★ T1.3 resolveRecallChars：0 必须由调用方跳过（否则 memory-rank 会回落到 2048，给得更多）', () => {
+  // 这条钉住"为什么不能直接传 0 进去"：memory-rank 的 resolveBudget 把 0 当"未设置"
+  assert.equal(resolveBudget({ maxChars: 0 }), 2048, '前提核实：传 0 会回落到默认 2048')
+  // 所以预算紧张时正确做法是"不调用 graph.search"，而不是拿 0 去调
+  assert.equal(resolveRecallChars({ totalBytes: 4096, usedBytes: 4096 }), 0, '本函数用 0 表达"别抽调"')
+})
+
+test('★ T1.3 总量不超预算：索引层 + 抽调层之和受同一个总预算约束', () => {
+  // 造一个"索引层已吃满 2/3、再想抽调 2048 字符"的典型场景：
+  // 旧行为 = 索引 2730 B + 抽调 ≈6 KB = 8.7 KB（超预算一倍多）；
+  // 新行为 = 剩余 1366 B ⇒ 455 字符（≈1.4 KB），合计仍在 4096 B 量级。
+  const total = 4096
+  const usedByIndex = Math.floor((total * 2) / 3)
+  const chars = resolveRecallChars({ totalBytes: total, usedBytes: usedByIndex })
+  assert.equal(chars, 455, `剩余应折算成 455 字符（实测 ${chars}）`)
+  assert.ok(usedByIndex + chars * 3 <= total, '★ 索引层 + 抽调层不得超过总预算（这是本任务的全部意义）')
 })
