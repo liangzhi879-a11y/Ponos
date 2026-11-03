@@ -123,6 +123,23 @@ node kernel/cli.mjs --help
 工具 schema 是**契约面**：改动 `kernel/tools.mjs` 里的名称/参数会同时影响宿主与快照，见 §8。
 宿主还可以注入自己的工具（`kernel/app-tools.mjs` 是扩展点），本仓不包含那些工具的实现。
 
+### 6.1 本仓口径 vs 应用仓口径（2026-11-03 实测）
+
+本仓 `main` 注册 **21** 个工具；应用仓的 `kernel/` 已扩到 **26** 个，多出的 5 个如下 —— 判定口径是
+**"能不能在没有界面的 Node 进程里独立跑完"**：能 → 属内核；需要 Windows 原生 / Electron 主进程能力 →
+**只把 schema 留在内核**（与 `Browser` 同构的 `ctx.*Driver` 委派），执行体留宿主。
+
+| 工具 | 内核侧 | 执行体 | 归属 |
+|---|---|---|---|
+| `ToolSearch` | `kernel/tool-search.mjs`（纯逻辑：检索延迟加载的工具 / MCP 工具，命中后并入可用集） | 内核 | **属内核**，尚未回流本仓 |
+| `ProjectAtlas` | `kernel/atlas/{config,store,query,term-index,inject}.mjs`（本地索引，只读 fs；索引格式版本 `ATLAS_VERSION=6`） | 内核 | **属内核**，尚未回流本仓 |
+| `SkillDraft` | `kernel/skill-drafts.mjs` + `skill-forge.mjs`（产出到 `.drafts/`，不装不生效） | 内核 | **属内核**，尚未回流本仓 |
+| `Screen` | `tools.mjs` 里的 schema；`run` 委派 `ctx.screenDriver` | **宿主**：`electron/screen-executor.cjs` + `screen.ps1`（UIA / SendInput） | schema **属内核**，driver **属宿主** |
+| `Vault` | `tools.mjs` 里的 schema（含解锁校验）；`run` 委派 `ctx.vaultDriver` | **宿主**：`electron/vault.cjs`（DPAPI + AES-GCM）+ 主进程审批闸门 | schema **属内核**，driver **属宿主** |
+
+★ 注意 `Screen` / `Vault` 不是"应用专属工具"：它们与本仓已有的 `Browser` 是同一种形态 ——
+内核声明 schema、宿主注入 driver。缺 driver 时该工具应报"不可用"，而不是让内核加载失败。
+
 ## 7. 协议与契约
 
 - **传输**：stdio NDJSON，一行一条消息；请求带 `id`，响应/事件按 `id` 与 `type` 关联。
@@ -180,8 +197,14 @@ node scripts/sync-builtin-skills.mjs
 ```
 
 - **两个仓、两条版本线**：应用线在私有仓推进；本仓只推进内核线（`KERNEL_VERSION`）。
-- **宿主注入**：需要用屏幕、密码库、剪贴板等能力时，由宿主注册工具（`app-tools.mjs` 扩展点），
-  内核不感知具体实现 —— 所以本仓的工具数是 21，而应用里会更多。
+- **宿主注入面（driver）**：内核只声明 schema，能力由宿主实现后经 `ctx` 传入 —— 已在本仓的是
+  `ctx.browserDriver`（`Browser`）；**应用仓才有**的是 `ctx.screenDriver`（`Screen`）与
+  `ctx.vaultDriver`（`Vault`）。三者的共同契约：内核侧可单独加载，缺 driver 时该工具**报不可用**而不是崩。
+- **内核线落后量（2026-11-03 实测）**：应用仓 `kernel/` 比本仓 `main` **多 52 个文件**
+  （`atlas/*`、`tool-search.mjs`、`skill-drafts.mjs`、`skill-forge.mjs`、`loop-*`、`knowledge-*` 等），
+  `kernel-tests/` 多 312 个文件、`shared/` 多 23 个；**本仓没有任何应用仓缺少的文件**（真子集）。
+  所以"把新能力搬过来"本质是**内核线同步**问题，不是"挑几个工具搬"的问题；同步时要按
+  §6.1 的判据分层（纯内核的进 `kernel/`，`app-*` 这类宿主适配的不进）。
 - **契约优先**：内核 ↔ 宿主的唯一耦合面是 `docs/bridge-contract.md`。想在本仓改动它，必须同步改文档
   并在提交信息里写明影响面。
 
